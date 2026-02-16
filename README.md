@@ -4,6 +4,9 @@ A powerful web-based control panel for managing Meshtastic nodes with advanced f
 
 **GitHub:** https://github.com/lordachoo/meshtastic-control
 
+![Session Management](docs/images/meshtastic-dashboard-session-management.png)
+*Multi-session interface showing connection management and active sessions*
+
 Connects to your Meshtastic device over TCP (WiFi) and provides:
 
 - **Multi-User Support** — Session-based architecture allows multiple users to connect to different devices simultaneously
@@ -59,6 +62,9 @@ Each session maintains its own connection, packet log, and state.
 2. Save the connection using the 💾 button for quick access later
 3. The dashboard will pull your node database and display all known nodes
 
+![Dashboard Device View](docs/images/meshtastic-dashboard-device-view.png)
+*Main dashboard showing node list, messages, and device statistics*
+
 ### Tabs Overview
 
 **Nodes Tab**
@@ -113,6 +119,9 @@ The sweep feature automatically sends traceroutes to all non-MQTT nodes (and any
 
 ### Auto-Responder System
 
+![Auto-Responder Configuration](docs/images/device-management-auto-responder.png)
+*Auto-responder rule configuration interface*
+
 The auto-responder automatically replies to incoming messages based on configurable rules.
 
 **How It Works:**
@@ -145,6 +154,9 @@ The auto-responder automatically replies to incoming messages based on configura
 ```
 
 ### Beacon System
+
+![Auto-Beacon Configuration](docs/images/device-management-auto-beacon.png)
+*Beacon system configuration with message templates and scheduling*
 
 The beacon system broadcasts periodic status messages with live device telemetry.
 
@@ -187,6 +199,11 @@ The beacon system broadcasts periodic status messages with live device telemetry
 ```
 Beacon from {my_name} ({my_id}) | Battery: {battery}% | Uptime: {uptime} | Time: {time}
 ```
+
+### Message Routing & MQTT Health
+
+![MQTT Health Monitoring](docs/images/device-management-message-routing-mqtt-health.png)
+*Message routing configuration and MQTT health statistics*
 
 ### Connection History
 

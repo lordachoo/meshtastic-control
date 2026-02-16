@@ -982,13 +982,13 @@ body::after {
   </div>
   <div class="connection-bar">
     <div class="status-dot" id="status-dot"></div>
-    <select id="saved-connections" onchange="loadSavedConnection()" style="width:200px;padding:6px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;margin-right:8px;">
-      <option value="">Saved Connections...</option>
-    </select>
-    <input type="text" id="host-input" placeholder="192.168.1.134" value="192.168.1.134">
-    <input type="text" id="port-input" placeholder="4403" value="4403" style="width: 70px;">
-    <button class="btn btn-sm" onclick="saveConnection()" title="Save this connection" style="margin-right:4px;">💾</button>
-    <button class="btn btn-primary" id="connect-btn" onclick="toggleConnect()">CONNECT</button>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span style="color: #aaa; font-size: 0.9em;">Active Session:</span>
+      <select id="active-session-selector" onchange="switchActiveSession()" style="min-width:200px;padding:6px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;">
+        <option value="">No session selected</option>
+      </select>
+      <button class="btn btn-sm" onclick="switchTab('sessions')" style="background: var(--accent-blue); color: #000; font-weight: bold;">Manage Sessions</button>
+    </div>
   </div>
 </div>
 
@@ -1036,11 +1036,59 @@ body::after {
 
   <!-- Tabs -->
   <div class="tab-bar" id="tab-bar" style="display:none;">
+    <div class="tab" data-tab="sessions" onclick="switchTab('sessions')">Sessions</div>
     <div class="tab active" data-tab="nodes" onclick="switchTab('nodes')">Nodes</div>
     <div class="tab" data-tab="messages" onclick="switchTab('messages')">Messages</div>
     <div class="tab" data-tab="traceroute" onclick="switchTab('traceroute')">RF Traceroute</div>
     <div class="tab" data-tab="packets" onclick="switchTab('packets')">Packet Log</div>
+    <div class="tab" data-tab="storeforward" onclick="switchTab('storeforward')" id="tab-storeforward" style="opacity: 0.5;">Store & Forward</div>
     <div class="tab" data-tab="device" onclick="switchTab('device')">Device Settings</div>
+  </div>
+
+  <!-- ── Sessions Tab ─────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-sessions">
+    <div class="section-header">
+      <h2>📡 Persistent Sessions</h2>
+      <p>Manage persistent device connections that survive browser restarts</p>
+    </div>
+
+    <!-- Create New Session Form -->
+    <div class="card" style="margin-bottom: 20px;">
+      <h3>Create New Session</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: end;">
+        <div>
+          <label style="display: block; margin-bottom: 5px; font-size: 0.9em; color: #aaa;">Session Name</label>
+          <input type="text" id="new-session-name" placeholder="e.g., Home Node" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff;">
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 5px; font-size: 0.9em; color: #aaa;">Host</label>
+          <input type="text" id="new-session-host" placeholder="192.168.1.134" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff;">
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 5px; font-size: 0.9em; color: #aaa;">Port</label>
+          <input type="number" id="new-session-port" value="4403" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff;">
+        </div>
+        <div>
+          <button onclick="createSession()" style="padding: 8px 20px; background: var(--accent-green); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Create Session</button>
+        </div>
+      </div>
+      <div style="margin-top: 10px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="new-session-autoconnect" style="cursor: pointer;">
+          <span style="font-size: 0.9em; color: #aaa;">Auto-connect on startup</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Sessions List -->
+    <div class="card">
+      <h3>Active Sessions</h3>
+      <div id="sessions-list" style="margin-top: 15px;">
+        <div style="text-align: center; padding: 40px; color: #666;">
+          Loading sessions...
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ── Nodes Tab ─────────────────────────────────────────────── -->
@@ -1176,6 +1224,79 @@ body::after {
         <input type="text" id="send-dest" placeholder="Destination (!nodeID or blank for broadcast)" style="width:250px;">
         <input type="text" id="send-text" placeholder="Message text...">
         <button class="btn btn-primary" onclick="sendMessage()">SEND</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Store & Forward Tab ────────────────────────────────────── -->
+  <div class="tab-content" id="tab-storeforward">
+    <div class="section-header">
+      <h2>📦 Store & Forward</h2>
+      <p>Monitor message storage and forwarding activity</p>
+    </div>
+
+    <div id="sf-disabled-message" style="display: none; text-align: center; padding: 60px 20px; color: #666;">
+      <div style="font-size: 3em; margin-bottom: 20px;">📦</div>
+      <h3 style="color: #888;">Store & Forward Not Available</h3>
+      <p>This device does not have the Store & Forward module enabled or available.</p>
+    </div>
+
+    <div id="sf-content">
+      <!-- Module Status Card -->
+      <div class="card" style="margin-bottom: 20px;">
+        <h3>📊 Module Status</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+          <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+            <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Status</div>
+            <div id="sf-status" style="font-size: 1.2em; font-weight: bold; color: var(--accent-green);">Loading...</div>
+          </div>
+          <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+            <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Mode</div>
+            <div id="sf-mode" style="font-size: 1.2em; font-weight: bold;">--</div>
+          </div>
+          <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+            <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Max Records</div>
+            <div id="sf-records" style="font-size: 1.2em; font-weight: bold; color: var(--accent-blue);">--</div>
+          </div>
+          <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+            <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Heartbeat</div>
+            <div id="sf-heartbeat" style="font-size: 1.2em; font-weight: bold;">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration Card -->
+      <div class="card" style="margin-bottom: 20px;">
+        <h3>⚙️ Configuration</h3>
+        <div style="margin-top: 15px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+              <div style="color: #aaa; font-size: 0.9em; margin-bottom: 8px;">History Return Max</div>
+              <div id="sf-history-max" style="font-size: 1.1em; padding: 10px; background: #2a2a2a; border-radius: 4px;">-- messages</div>
+            </div>
+            <div>
+              <div style="color: #aaa; font-size: 0.9em; margin-bottom: 8px;">History Return Window</div>
+              <div id="sf-history-window" style="font-size: 1.1em; padding: 10px; background: #2a2a2a; border-radius: 4px;">-- minutes</div>
+            </div>
+          </div>
+          <div style="margin-top: 20px; padding: 15px; background: #1a1a1a; border-left: 3px solid var(--accent-blue); border-radius: 4px;">
+            <div style="font-size: 0.9em; color: #aaa; margin-bottom: 5px;">ℹ️ About Store & Forward</div>
+            <div style="font-size: 0.85em; color: #888; line-height: 1.5;">
+              The Store & Forward module allows this device to store messages for offline nodes and forward them when they reconnect to the mesh.
+              This is useful for extending message delivery in areas with intermittent connectivity.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Message Activity Card -->
+      <div class="card">
+        <h3>📨 Message Activity</h3>
+        <div style="text-align: center; padding: 40px 20px; color: #666;">
+          <div style="font-size: 2em; margin-bottom: 10px;">📭</div>
+          <div style="color: #888;">No message activity data available yet</div>
+          <div style="font-size: 0.85em; color: #666; margin-top: 5px;">Message storage and forwarding statistics will appear here</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1383,13 +1504,20 @@ function setDisconnected() {
 // ── Status Refresh ─────────────────────────────────────────────────────
 async function refreshStatus() {
   try {
-    const res = await fetch('/api/status');
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/status?session_name=${encodeURIComponent(activeSession)}` : '/api/status';
+    const res = await fetch(url);
     const data = await res.json();
     if (!data.connected) { setDisconnected(); return; }
 
     document.getElementById('stat-total').textContent = data.nodeCount;
 
     if (data.myNode) {
+      // Update My Node display
+      document.getElementById('stat-mynode').textContent = data.myNode.longName || data.myNode.shortName || data.myNode.id || '--';
+      document.getElementById('stat-mynode-sub').textContent = data.myNode.id || '';
+      
+      // Update other stats
       document.getElementById('stat-battery').textContent =
         data.myNode.batteryLevel != null ? (data.myNode.batteryLevel > 100 ? '🔌 Plugged In' : data.myNode.batteryLevel + '%') : '--';
       document.getElementById('stat-voltage').textContent =
@@ -1404,7 +1532,9 @@ async function refreshStatus() {
 
 async function refreshMqttHealth() {
   try {
-    const res = await fetch('/api/mqtt/health');
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/mqtt/health?session_name=${encodeURIComponent(activeSession)}` : '/api/mqtt/health';
+    const res = await fetch(url);
     const data = await res.json();
     
     const statusEl = document.getElementById('mqtt-health-status');
@@ -1444,7 +1574,9 @@ async function refreshMqttHealth() {
 async function refreshNodes() {
   if (!connected) return;
   try {
-    const res = await fetch(`/api/nodes?filter=${currentFilter}`);
+    const activeSession = getActiveSession();
+    const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
+    const res = await fetch(`/api/nodes?filter=${currentFilter}${sessionParam}`);
     allNodes = await res.json();
     renderNodes();
   } catch (e) { /* silent */ }
@@ -1589,7 +1721,9 @@ async function cancelTraceroute(nodeId) {
 
 async function refreshTraceroutes() {
   try {
-    const res = await fetch('/api/traceroute/results');
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/traceroute/results?session_name=${encodeURIComponent(activeSession)}` : '/api/traceroute/results';
+    const res = await fetch(url);
     const results = await res.json();
     renderTraceroutes(results);
   } catch (e) { /* silent */ }
@@ -1700,7 +1834,9 @@ let displayedMessageIds = new Set();
 async function refreshMessages() {
   if (!connected) return;
   try {
-    const url = lastMessageTime ? `/api/packets?since=${lastMessageTime}` : '/api/packets';
+    const activeSession = getActiveSession();
+    const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
+    const url = lastMessageTime ? `/api/packets?since=${lastMessageTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const packets = await res.json();
 
@@ -1817,10 +1953,16 @@ async function sendMessageFromTab() {
   if (!text) { toast('Enter a message', 'error'); return; }
 
   try {
+    const activeSession = getActiveSession();
+    const payload = { text, dest };
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
+    
     const res = await fetch('/api/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, dest })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (data.error) { toast(data.error, 'error'); return; }
@@ -1835,7 +1977,9 @@ let lastPacketTime = null;
 async function refreshPackets() {
   if (!connected) return;
   try {
-    const url = lastPacketTime ? `/api/packets?since=${lastPacketTime}` : '/api/packets';
+    const activeSession = getActiveSession();
+    const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
+    const url = lastPacketTime ? `/api/packets?since=${lastPacketTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const packets = await res.json();
 
@@ -2243,7 +2387,9 @@ function renderDeviceSettings(config) {
 
 async function loadMqttHealthDetails() {
   try {
-    const res = await fetch('/api/mqtt/health');
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/mqtt/health?session_name=${encodeURIComponent(activeSession)}` : '/api/mqtt/health';
+    const res = await fetch(url);
     const data = await res.json();
     const el = document.getElementById('mqtt-health-details');
     
@@ -2997,15 +3143,278 @@ async function testMqttConnection() {
   }
 }
 
+// ── Session Management ─────────────────────────────────────────────────
+
+async function loadSessions() {
+  try {
+    const res = await fetch('/api/sessions');
+    const data = await res.json();
+    renderSessions(data.sessions || []);
+  } catch (e) {
+    console.error('Error loading sessions:', e);
+    document.getElementById('sessions-list').innerHTML = '<div style="text-align: center; padding: 40px; color: var(--accent-red);">Error loading sessions</div>';
+  }
+}
+
+function renderSessions(sessions) {
+  const container = document.getElementById('sessions-list');
+  
+  if (sessions.length === 0) {
+    container.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">No sessions configured. Create one above to get started.</div>';
+    return;
+  }
+  
+  let html = '<div style="display: grid; gap: 15px;">';
+  
+  sessions.forEach(session => {
+    const statusColor = session.connected ? 'var(--accent-green)' : '#666';
+    const statusText = session.connected ? '● Connected' : '○ Disconnected';
+    const lastConnected = session.last_connected ? new Date(session.last_connected).toLocaleString() : 'Never';
+    
+    html += `
+      <div class="session-card" style="background: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 15px;">
+        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+          <div>
+            <h4 style="margin: 0 0 5px 0; font-size: 1.1em;">${escapeHtml(session.name)}</h4>
+            <div style="font-size: 0.9em; color: #aaa;">${escapeHtml(session.host)}:${session.port}</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="color: ${statusColor}; font-size: 0.9em; margin-bottom: 5px;">${statusText}</div>
+            <div style="font-size: 0.8em; color: #666;">Last: ${lastConnected}</div>
+          </div>
+        </div>
+        
+        <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
+          ${session.connected ? 
+            `<button onclick="disconnectSession('${escapeHtml(session.name)}')" style="padding: 6px 15px; background: var(--accent-red); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em;">Disconnect</button>` :
+            `<button onclick="connectSession('${escapeHtml(session.name)}')" style="padding: 6px 15px; background: var(--accent-green); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9em;">Connect</button>`
+          }
+          <button onclick="window.open('/?session=${encodeURIComponent(session.name)}', '_blank')" style="padding: 6px 15px; background: var(--accent-blue); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9em;">📱 Open in New Tab</button>
+          <button onclick="deleteSession('${escapeHtml(session.name)}')" style="padding: 6px 15px; background: #444; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em;">Delete</button>
+          
+          <div style="margin-left: auto; display: flex; gap: 10px; font-size: 0.85em; color: #aaa;">
+            ${session.beacon_enabled ? '<span style="color: var(--accent-blue);">📡 Beacon</span>' : ''}
+            ${session.autoresponder_enabled ? '<span style="color: var(--accent-purple);">🤖 Auto-responder</span>' : ''}
+            ${session.auto_connect ? '<span style="color: var(--accent-green);">⚡ Auto-connect</span>' : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function createSession() {
+  const name = document.getElementById('new-session-name').value.trim();
+  const host = document.getElementById('new-session-host').value.trim();
+  const port = parseInt(document.getElementById('new-session-port').value);
+  const autoConnect = document.getElementById('new-session-autoconnect').checked;
+  
+  if (!name) {
+    toast('Please enter a session name', 'error');
+    return;
+  }
+  if (!host) {
+    toast('Please enter a host address', 'error');
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/sessions/create', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, host, port, auto_connect: autoConnect})
+    });
+    
+    const data = await res.json();
+    
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+    
+    toast(`Session "${name}" created successfully`, 'success');
+    
+    // Clear form
+    document.getElementById('new-session-name').value = '';
+    document.getElementById('new-session-host').value = '';
+    document.getElementById('new-session-port').value = '4403';
+    document.getElementById('new-session-autoconnect').checked = false;
+    
+    // Reload sessions list
+    loadSessions();
+  } catch (e) {
+    toast(`Error creating session: ${e.message}`, 'error');
+  }
+}
+
+async function connectSession(sessionName) {
+  try {
+    toast(`Connecting to "${sessionName}"...`, 'info');
+    
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/connect`, {
+      method: 'POST'
+    });
+    
+    const data = await res.json();
+    
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+    
+    toast(`Connected to "${sessionName}"`, 'success');
+    
+    // Set as active session
+    setActiveSession(sessionName);
+    
+    // Reload sessions list
+    loadSessions();
+    
+    // Refresh other tabs
+    refreshStatus();
+    refreshNodes();
+  } catch (e) {
+    toast(`Error connecting: ${e.message}`, 'error');
+  }
+}
+
+async function disconnectSession(sessionName) {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/disconnect`, {
+      method: 'POST'
+    });
+    
+    const data = await res.json();
+    
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+    
+    toast(`Disconnected from "${sessionName}"`, 'success');
+    loadSessions();
+  } catch (e) {
+    toast(`Error disconnecting: ${e.message}`, 'error');
+  }
+}
+
+async function deleteSession(sessionName) {
+  if (!confirm(`Are you sure you want to delete session "${sessionName}"? This cannot be undone.`)) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
+      method: 'POST'
+    });
+    
+    const data = await res.json();
+    
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+    
+    toast(`Session "${sessionName}" deleted`, 'success');
+    loadSessions();
+  } catch (e) {
+    toast(`Error deleting session: ${e.message}`, 'error');
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Store & Forward ────────────────────────────────────────────────────
+
+async function checkStoreForwardAvailability() {
+  // Check if Store & Forward is available and enable/disable tab accordingly
+  try {
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}` : '/api/store-forward/status';
+    const res = await fetch(url);
+    const data = await res.json();
+    
+    const tabEl = document.getElementById('tab-storeforward');
+    
+    if (!data.available || !data.enabled) {
+      // Module not available - gray out tab
+      tabEl.style.opacity = '0.5';
+      tabEl.style.cursor = 'not-allowed';
+    } else {
+      // Module available - enable tab
+      tabEl.style.opacity = '1';
+      tabEl.style.cursor = 'pointer';
+    }
+  } catch (e) {
+    console.error('Error checking Store & Forward availability:', e);
+    document.getElementById('tab-storeforward').style.opacity = '0.5';
+  }
+}
+
+async function loadStoreForwardStatus() {
+  try {
+    const activeSession = getActiveSession();
+    const url = activeSession ? `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}` : '/api/store-forward/status';
+    const res = await fetch(url);
+    const data = await res.json();
+    
+    console.log('[STORE&FORWARD] API response:', data);
+    
+    const tabEl = document.getElementById('tab-storeforward');
+    const disabledMsg = document.getElementById('sf-disabled-message');
+    const content = document.getElementById('sf-content');
+    
+    console.log('[STORE&FORWARD] Elements found:', {tabEl: !!tabEl, disabledMsg: !!disabledMsg, content: !!content});
+    console.log('[STORE&FORWARD] Checking: available=' + data.available + ', enabled=' + data.enabled);
+    
+    if (!data.available || !data.enabled) {
+      // Module not available or disabled - gray out tab and show message
+      tabEl.style.opacity = '0.5';
+      tabEl.style.cursor = 'not-allowed';
+      disabledMsg.style.display = 'block';
+      content.style.display = 'none';
+    } else {
+      // Module enabled - show content and update values
+      tabEl.style.opacity = '1';
+      tabEl.style.cursor = 'pointer';
+      disabledMsg.style.display = 'none';
+      content.style.display = 'block';
+      
+      // Update status display
+      document.getElementById('sf-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
+      document.getElementById('sf-status').style.color = data.enabled ? 'var(--accent-green)' : 'var(--accent-red)';
+      
+      document.getElementById('sf-mode').textContent = data.isServer ? 'Server' : 'Client';
+      document.getElementById('sf-records').textContent = data.records || 0;
+      document.getElementById('sf-heartbeat').textContent = data.heartbeat ? 'Enabled' : 'Disabled';
+      document.getElementById('sf-history-max').textContent = `${data.historyReturnMax || 0} messages`;
+      document.getElementById('sf-history-window').textContent = `${data.historyReturnWindow || 0} minutes`;
+    }
+  } catch (e) {
+    console.error('Error loading Store & Forward status:', e);
+    // On error, gray out the tab
+    document.getElementById('tab-storeforward').style.opacity = '0.5';
+  }
+}
+
 // ── Tab Switching ──────────────────────────────────────────────────────
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById(`tab-${tab}`).classList.add('active');
 
+  if (tab === 'sessions') loadSessions();
   if (tab === 'messages') refreshMessages();
   if (tab === 'traceroute') refreshTraceroutes();
   if (tab === 'packets') refreshPackets();
+  if (tab === 'storeforward') loadStoreForwardStatus();
   if (tab === 'device') refreshDeviceSettings();
 }
 
@@ -3022,18 +3431,150 @@ document.getElementById('tr-dest').addEventListener('keydown', e => {
   if (e.key === 'Enter') sendTraceroute();
 });
 
-// Prevent Ctrl+R from reloading when connected
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
-    if (connected) {
-      e.preventDefault();
-      toast('Reload disabled while connected. Disconnect first to reload.', 'info');
-    }
-  }
-});
+// Ctrl+R reload is now allowed - sessions persist across reloads
 
-// Load connection history on page load
-loadConnectionHistory();
+// ── Active Session Management ──────────────────────────────────────────
+
+let activeSessionName = null;
+
+function getActiveSession() {
+  if (!activeSessionName) {
+    activeSessionName = localStorage.getItem('active_session');
+  }
+  return activeSessionName;
+}
+
+function setActiveSession(sessionName) {
+  activeSessionName = sessionName;
+  if (sessionName) {
+    localStorage.setItem('active_session', sessionName);
+  } else {
+    localStorage.removeItem('active_session');
+  }
+  updateActiveSessionUI();
+}
+
+async function updateActiveSessionUI() {
+  const selector = document.getElementById('active-session-selector');
+  
+  try {
+    const res = await fetch('/api/sessions');
+    const data = await res.json();
+    const sessions = data.sessions || [];
+    
+    // Update selector options
+    selector.innerHTML = '<option value="">No session selected</option>';
+    sessions.forEach(session => {
+      const option = document.createElement('option');
+      option.value = session.name;
+      option.textContent = `${session.name} ${session.connected ? '●' : '○'}`;
+      if (session.name === activeSessionName) {
+        option.selected = true;
+      }
+      selector.appendChild(option);
+    });
+    
+    // Update status dot
+    const statusDot = document.getElementById('status-dot');
+    const activeSession = sessions.find(s => s.name === activeSessionName);
+    if (activeSession && activeSession.connected) {
+      statusDot.className = 'status-dot connected';
+    } else {
+      statusDot.className = 'status-dot';
+    }
+  } catch (e) {
+    console.error('Error updating active session UI:', e);
+  }
+}
+
+function switchActiveSession() {
+  const selector = document.getElementById('active-session-selector');
+  const newSession = selector.value;
+  
+  if (newSession) {
+    setActiveSession(newSession);
+    toast(`Switched to session: ${newSession}`, 'info');
+    // Refresh data for new session
+    refreshStatus();
+    refreshNodes();
+  } else {
+    setActiveSession(null);
+  }
+}
+
+// Initialize on page load
+async function initializePage() {
+  // Check if session specified in URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSession = urlParams.get('session');
+  
+  // Load sessions and set up UI
+  await updateActiveSessionUI();
+  
+  // Check if we have any sessions
+  const res = await fetch('/api/sessions');
+  const data = await res.json();
+  const sessions = data.sessions || [];
+  
+  if (urlSession && sessions.find(s => s.name === urlSession)) {
+    // URL specified a session - use it and show dashboard
+    setActiveSession(urlSession);
+    const session = sessions.find(s => s.name === urlSession);
+    
+    if (session.connected) {
+      // Already connected, show dashboard
+      connected = true;
+      document.getElementById('tab-bar').style.display = 'flex';
+      document.getElementById('stats-row').style.display = 'grid';
+      document.getElementById('nodes-content').style.display = '';
+      switchTab('nodes');
+      
+      // Start polling
+      pollInterval = setInterval(refreshStatus, 3000);
+      packetPollInterval = setInterval(() => {
+        refreshPackets();
+        refreshMessages();
+      }, 3000);
+      mqttHealthInterval = setInterval(refreshMqttHealth, 5000);
+      
+      // Load data immediately - backend has cached node info
+      refreshStatus();
+      refreshNodes();
+      refreshMqttHealth();
+      refreshTraceroutes();
+      refreshPackets();
+      refreshMessages();
+      
+      // Check Store & Forward status to enable/disable tab
+      checkStoreForwardAvailability();
+    } else {
+      // Not connected, show sessions tab to connect
+      switchTab('sessions');
+      toast(`Session "${urlSession}" is not connected. Click Connect to start.`, 'info');
+    }
+  } else if (sessions.length > 0) {
+    // No URL session, show Sessions tab by default
+    switchTab('sessions');
+    
+    // If we have an active session, try to use it
+    const savedActive = getActiveSession();
+    if (savedActive && sessions.find(s => s.name === savedActive)) {
+      setActiveSession(savedActive);
+    } else if (sessions.length === 1) {
+      // Auto-select if only one session
+      setActiveSession(sessions[0].name);
+    }
+  } else {
+    // No sessions, show Sessions tab to create one
+    switchTab('sessions');
+  }
+  
+  // Start periodic refresh of session selector
+  setInterval(updateActiveSessionUI, 5000);
+}
+
+// Initialize page
+initializePage();
 </script>
 
 <!-- MQTT Configuration Modal -->

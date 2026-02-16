@@ -46,6 +46,11 @@ BEACON_FILE = "beacon.json"
 beacon_config = {"enabled": False, "interval_minutes": 60, "message_template": "", "channel": 0}
 beacon_threads = {}  # session_id -> beacon thread
 
+# Persistent sessions configuration
+PERSISTENT_SESSIONS_FILE = "persistent_sessions.json"
+persistent_sessions = {}  # session_name -> session_config
+persistent_sessions_lock = threading.Lock()
+
 # ── Session-Based State ────────────────────────────────────────────────────
 # Each session gets its own connection and state
 sessions = {}  # session_id -> session_data
@@ -77,7 +82,8 @@ def create_session_data():
         },
         "last_activity": time.time(),
         "connected_at": None,
-        "node_ip": None
+        "node_ip": None,
+        "my_node_info": None  # Cache node info here
     }
 
 def get_session_id():
@@ -87,9 +93,25 @@ def get_session_id():
         session.permanent = True
     return session['session_id']
 
-def get_session_data():
-    """Get session data for current user, creating if needed."""
-    session_id = get_session_id()
+def get_session_data(session_name=None):
+    """Get session data for current user, creating if needed.
+    
+    Args:
+        session_name: Optional persistent session name to use instead of Flask session
+    """
+    # If session_name provided, use persistent session
+    if session_name:
+        with persistent_sessions_lock:
+            if session_name not in persistent_sessions:
+                raise ValueError(f"Session '{session_name}' not found")
+            session_id = persistent_sessions[session_name]["session_id"]
+            session_config = persistent_sessions[session_name]
+        print(f"[SESSION] Looking up session '{session_name}' -> session_id={session_id[:8]}")
+    else:
+        # Fall back to Flask session
+        session_id = get_session_id()
+        session_config = None
+        print(f"[SESSION] Using Flask session_id={session_id[:8]}")
     
     with sessions_lock:
         if session_id not in sessions:
@@ -99,7 +121,40 @@ def get_session_data():
                 cleanup_old_sessions(force_one=True)
                 
             sessions[session_id] = create_session_data()
+            print(f"[SESSION] Created NEW session data for {session_id[:8]} (no existing data found)")
+            
+            # If this is a persistent session with connection info, auto-reconnect
+            if session_config and session_config.get("host"):
+                print(f"[SESSION] Auto-reconnecting persistent session '{session_name}' to {session_config['host']}:{session_config['port']}")
+                try:
+                    # Create interface
+                    sessions[session_id]["iface"] = meshtastic.tcp_interface.TCPInterface(
+                        hostname=session_config["host"],
+                        portNumber=session_config["port"]
+                    )
+                    sessions[session_id]["iface"]._session_id = session_id
+                    sessions[session_id]["mqtt_health"]["connection_start"] = time.time()
+                    sessions[session_id]["node_ip"] = session_config["host"]
+                    sessions[session_id]["connected_at"] = time.time()
+                    
+                    # Wait briefly for node DB to populate, then cache node info
+                    time.sleep(2)
+                    my_node = get_my_node(sessions[session_id])
+                    sessions[session_id]["my_node_info"] = my_node
+                    print(f"[SESSION] Auto-reconnect successful for '{session_name}', cached node: {my_node.get('id') if my_node else 'unknown'}")
+                    
+                    # Start beacon if enabled
+                    if beacon_config.get("enabled", False):
+                        print(f"[BEACON] Starting beacon thread for auto-reconnected session '{session_name}'")
+                        start_beacon(session_id)
+                except Exception as e:
+                    print(f"[SESSION] Auto-reconnect failed for '{session_name}': {e}")
+                    logger.error(f"Auto-reconnect failed: {e}")
+            
             logger.info(f"Created new session: {session_id}")
+        else:
+            has_iface = sessions[session_id]["iface"] is not None
+            print(f"[SESSION] Found EXISTING session data for {session_id[:8]}, has_iface={has_iface}")
         
         # Update last activity
         sessions[session_id]["last_activity"] = time.time()
@@ -183,21 +238,135 @@ def should_filter_message(packet):
     if node_ids:
         node_match = from_id in node_ids
         if filter_mode == "allowlist" and not node_match:
+            logger.info(f"Message filter: BLOCKING {from_id} (not in allowlist)")
             return True  # Filter out (not in allowlist)
         elif filter_mode == "blocklist" and node_match:
+            logger.info(f"Message filter: BLOCKING {from_id} (in blocklist)")
             return True  # Filter out (in blocklist)
     
     # Check portnum filtering
     if portnums:
         portnum_match = portnum in portnums
         if filter_mode == "allowlist" and not portnum_match:
+            logger.info(f"Message filter: BLOCKING {portnum} (not in allowlist)")
             return True  # Filter out (not in allowlist)
         elif filter_mode == "blocklist" and portnum_match:
+            logger.info(f"Message filter: BLOCKING {portnum} (in blocklist)")
             return True  # Filter out (in blocklist)
     
     return False  # Don't filter
 
 load_message_filter()
+
+
+# ── Persistent Session Management ──────────────────────────────────────────
+
+def load_persistent_sessions():
+    """Load persistent sessions from JSON file."""
+    global persistent_sessions
+    try:
+        with open(PERSISTENT_SESSIONS_FILE, 'r') as f:
+            persistent_sessions = json.load(f)
+        logger.info(f"Loaded {len(persistent_sessions)} persistent sessions")
+    except FileNotFoundError:
+        persistent_sessions = {}
+        logger.info("No persistent sessions file found, starting fresh")
+    except Exception as e:
+        logger.error(f"Error loading persistent sessions: {e}")
+        persistent_sessions = {}
+
+
+def save_persistent_sessions():
+    """Save persistent sessions to JSON file."""
+    try:
+        with open(PERSISTENT_SESSIONS_FILE, 'w') as f:
+            json.dump(persistent_sessions, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving persistent sessions: {e}")
+
+
+def create_persistent_session(name, host, port, auto_connect=False):
+    """Create a new persistent session configuration."""
+    with persistent_sessions_lock:
+        if name in persistent_sessions:
+            return {"error": "Session name already exists"}
+        
+        session_id = secrets.token_hex(16)
+        persistent_sessions[name] = {
+            "session_id": session_id,
+            "name": name,
+            "host": host,
+            "port": port,
+            "auto_connect": auto_connect,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_connected": None,
+            "beacon_enabled": False,
+            "beacon_interval": 60,
+            "beacon_message": "",
+            "beacon_channel": 0,
+            "autoresponder_enabled": False,
+            "autoresponder_rules": []
+        }
+        save_persistent_sessions()
+        
+        # Create runtime session data
+        with sessions_lock:
+            if session_id not in sessions:
+                sessions[session_id] = create_session_data()
+        
+        return {"success": True, "session_id": session_id, "name": name}
+
+
+def delete_persistent_session(name):
+    """Delete a persistent session."""
+    with persistent_sessions_lock:
+        if name not in persistent_sessions:
+            return {"error": "Session not found"}
+        
+        session_config = persistent_sessions[name]
+        session_id = session_config["session_id"]
+        
+        # Disconnect if connected
+        with sessions_lock:
+            if session_id in sessions:
+                session_data = sessions[session_id]
+                if session_data["iface"]:
+                    try:
+                        session_data["iface"].close()
+                    except:
+                        pass
+                # Stop beacon if running
+                stop_beacon(session_id)
+                del sessions[session_id]
+        
+        del persistent_sessions[name]
+        save_persistent_sessions()
+        return {"success": True}
+
+
+def get_session_by_name(name):
+    """Get session ID and data by session name."""
+    with persistent_sessions_lock:
+        if name not in persistent_sessions:
+            return None, None
+        session_config = persistent_sessions[name]
+        session_id = session_config["session_id"]
+    
+    with sessions_lock:
+        session_data = sessions.get(session_id)
+    
+    return session_id, session_data
+
+
+def update_persistent_session_config(name, updates):
+    """Update persistent session configuration."""
+    with persistent_sessions_lock:
+        if name not in persistent_sessions:
+            return {"error": "Session not found"}
+        
+        persistent_sessions[name].update(updates)
+        save_persistent_sessions()
+        return {"success": True}
 
 
 # ── Auto-Responder Functions ────────────────────────────────────────────────
@@ -323,6 +492,7 @@ def substitute_beacon_variables(template, session_data):
 
 def beacon_loop(session_id):
     """Background thread that sends beacon messages at configured intervals."""
+    print(f"[BEACON] Beacon thread started for session {session_id[:8]}")
     logger.info(f"Beacon thread started for session {session_id[:8]}")
     
     while True:
@@ -344,7 +514,39 @@ def beacon_loop(session_id):
                 logger.info(f"Interface disconnected for session {session_id[:8]}, stopping beacon")
                 break
             
-            # Send beacon message
+            # Sleep FIRST, then send beacon (prevents spam on reconnect)
+            interval_minutes = beacon_config.get("interval_minutes", 60)
+            sleep_seconds = interval_minutes * 60
+            
+            print(f"[BEACON] Sleeping for {interval_minutes} minutes before sending beacon")
+            logger.info(f"Beacon thread sleeping for {interval_minutes} minutes ({sleep_seconds}s) for session {session_id[:8]}")
+            
+            # Sleep in small chunks to allow for quick shutdown
+            # Log countdown every 60 seconds
+            for i in range(sleep_seconds):
+                if not beacon_config.get("enabled", False):
+                    logger.info(f"Beacon disabled during sleep, exiting thread for session {session_id[:8]}")
+                    break
+                
+                # Log countdown every minute
+                remaining = sleep_seconds - i
+                if remaining % 60 == 0 and remaining > 0:
+                    mins_remaining = remaining // 60
+                    print(f"[BEACON] Countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
+                    logger.info(f"Beacon countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
+                
+                time.sleep(1)
+            
+            # Check again if still enabled after sleep
+            if not beacon_config.get("enabled", False):
+                break
+                
+            # Check if interface still connected after sleep
+            if not session_data["iface"]:
+                logger.info(f"Interface disconnected during sleep for session {session_id[:8]}, stopping beacon")
+                break
+            
+            # NOW send beacon message after the wait
             template = beacon_config.get("message_template", "")
             if template:
                 message = substitute_beacon_variables(template, session_data)
@@ -352,6 +554,7 @@ def beacon_loop(session_id):
                 
                 try:
                     session_data["iface"].sendText(message, channelIndex=channel)
+                    print(f"[BEACON] Sent beacon from session {session_id[:8]}: {message}")
                     logger.info(f"Beacon sent from session {session_id[:8]}: {message}")
                     
                     # Add to packet log
@@ -381,16 +584,6 @@ def beacon_loop(session_id):
                     
                 except Exception as e:
                     logger.error(f"Error sending beacon: {e}")
-            
-            # Sleep for the configured interval
-            interval_minutes = beacon_config.get("interval_minutes", 60)
-            sleep_seconds = interval_minutes * 60
-            
-            # Sleep in small chunks to allow for quick shutdown
-            for _ in range(sleep_seconds):
-                if not beacon_config.get("enabled", False):
-                    break
-                time.sleep(1)
                 
         except Exception as e:
             logger.error(f"Error in beacon loop: {e}")
@@ -407,13 +600,17 @@ def start_beacon(session_id):
     """Start beacon thread for a session."""
     global beacon_threads
     
+    print(f"[BEACON] start_beacon() called for session {session_id[:8]}")
+    
     # Stop existing beacon if running
     stop_beacon(session_id)
     
     # Start new beacon thread
+    print(f"[BEACON] Creating and starting beacon thread...")
     thread = threading.Thread(target=beacon_loop, args=(session_id,), daemon=True)
     thread.start()
     beacon_threads[session_id] = thread
+    print(f"[BEACON] Started beacon thread for session {session_id[:8]}")
     logger.info(f"Started beacon for session {session_id[:8]}")
 
 
@@ -465,7 +662,10 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
     """Check if message should trigger an auto-response."""
     global last_response_times
     
+    print(f"[AUTO-RESPONDER] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
+    
     if not autoresponder_config.get("enabled", False):
+        print(f"[AUTO-RESPONDER] ✗ Auto-responder is DISABLED")
         logger.info(f"Auto-responder disabled")
         return None
     
@@ -477,23 +677,35 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
     # Don't respond to our own messages
     my_node = get_my_node(session_data)
     if my_node and from_id == my_node["id"]:
+        print(f"[AUTO-RESPONDER] ✗ Message from self ({from_id}), skipping")
         logger.info(f"Message from self ({from_id}), skipping auto-responder")
         return None
     
+    print(f"[AUTO-RESPONDER] Processing message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
     logger.info(f"Auto-responder checking message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
     
     is_broadcast = to_id == "^all"
     message_lower = message_text.lower().strip()
     
+    print(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}'")
+    
     for rule in autoresponder_config.get("rules", []):
+        rule_id = rule.get("id", "unknown")
+        
         if not rule.get("enabled", False):
+            print(f"[AUTO-RESPONDER] Rule '{rule_id}' is disabled, skipping")
+            logger.info(f"Rule '{rule_id}' is disabled, skipping")
             continue
         
         # Check message type filter
         msg_type = rule.get("messageType", "both")
         if msg_type == "broadcast" and not is_broadcast:
+            print(f"[AUTO-RESPONDER] Rule '{rule_id}' requires broadcast, message is direct, skipping")
+            logger.info(f"Rule '{rule_id}' requires broadcast, message is direct, skipping")
             continue
         if msg_type == "direct" and is_broadcast:
+            print(f"[AUTO-RESPONDER] Rule '{rule_id}' requires direct, message is broadcast, skipping")
+            logger.info(f"Rule '{rule_id}' requires direct, message is broadcast, skipping")
             continue
         
         # Check trigger
@@ -508,16 +720,24 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
         elif trigger_type == "startswith":
             matched = message_lower.startswith(trigger)
         
+        print(f"[AUTO-RESPONDER] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, matched={matched}")
+        logger.info(f"Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, message='{message_lower}', matched={matched}")
+        
         if not matched:
             continue
         
         # Check cooldown
-        rule_id = rule.get("id", "")
         cooldown = rule.get("cooldownSeconds", 60)
         now = time.time()
         last_time = last_response_times.get(rule_id, 0)
+        time_since_last = now - last_time
+        
+        logger.info(f"Rule '{rule_id}' matched! Cooldown: {cooldown}s, time since last: {time_since_last:.1f}s")
         
         if now - last_time < cooldown:
+            remaining = cooldown - time_since_last
+            print(f"[AUTO-RESPONDER] ✗ Rule '{rule_id}' matched but in cooldown ({remaining:.0f}s remaining)")
+            logger.info(f"Rule '{rule_id}' still in cooldown ({time_since_last:.1f}s / {cooldown}s), skipping")
             continue  # Still in cooldown
         
         # Update last response time
@@ -603,7 +823,16 @@ def get_my_node(session_data):
 
 def on_receive(packet, interface):
     """Called on every received packet - routes to correct session."""
+    print(f"[PACKET] on_receive() called! packet keys: {list(packet.keys())}")
     try:
+        # Log every packet that arrives
+        from_id = packet.get('fromId', '?')
+        portnum = packet.get('decoded', {}).get('portnum', 'UNKNOWN')
+        has_rf = packet.get('rxSnr') is not None or packet.get('rxRssi') is not None
+        source = "RF" if has_rf else "MQTT"
+        print(f"[PACKET] {source} packet from {from_id}, port={portnum}")
+        logger.info(f"on_receive: {source} packet from {from_id}, port={portnum}")
+        
         # Get session_id from interface
         session_id = getattr(interface, '_session_id', None)
         if not session_id:
@@ -662,10 +891,12 @@ def on_receive(packet, interface):
             # Check for auto-responder trigger
             from_id = packet.get("fromId", "?")
             to_id = packet.get("toId", "?")
+            print(f"[AUTO-RESPONDER] Checking message: '{text}' from={from_id} to={to_id}")
             logger.info(f"Checking auto-responder for text='{text}' from={from_id} to={to_id}")
             auto_response = check_autoresponder(text, from_id, to_id, session_data)
             
             if auto_response:
+                print(f"[AUTO-RESPONDER] ✓ Sending response: '{auto_response}' to {from_id}")
                 logger.info(f"Auto-responding to '{text}' from {from_id} with '{auto_response}'")
                 try:
                     # Send response in a separate thread to avoid blocking
@@ -775,6 +1006,14 @@ def connect():
 
         my_node = get_my_node(session_data)
         node_count = len(session_data["iface"].nodes) if session_data["iface"].nodes else 0
+        
+        # Start beacon thread if beacon is enabled
+        if beacon_config.get("enabled", False):
+            print(f"[BEACON] Beacon is enabled, starting beacon thread for session {session_id[:8]}")
+            logger.info(f"Beacon is enabled, starting beacon thread for session {session_id[:8]}")
+            start_beacon(session_id)
+        else:
+            print(f"[BEACON] Beacon is disabled, not starting thread")
 
         return jsonify({
             "status": "connected",
@@ -801,25 +1040,40 @@ def disconnect():
 @app.route("/api/status")
 def status():
     """Get connection status and basic info."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i:
+        print(f"[STATUS] No interface for session '{session_name}'")
         return jsonify({"connected": False})
     try:
-        my_node = get_my_node(session_data)
-        return jsonify({
+        # Use cached node info if available, otherwise fetch it
+        my_node = session_data.get("my_node_info")
+        if not my_node:
+            print(f"[STATUS] No cached node info for session '{session_name}', fetching...")
+            my_node = get_my_node(session_data)
+            session_data["my_node_info"] = my_node  # Cache it
+            print(f"[STATUS] Fetched and cached node: {my_node.get('id') if my_node else 'None'}")
+        else:
+            print(f"[STATUS] Using cached node info for session '{session_name}': {my_node.get('id') if my_node else 'None'}")
+        
+        result = {
             "connected": True,
             "myNode": my_node,
             "nodeCount": len(i.nodes) if i.nodes else 0
-        })
-    except:
+        }
+        print(f"[STATUS] Returning myNode: id={my_node.get('id') if my_node else None}, longName={my_node.get('longName') if my_node else None}, shortName={my_node.get('shortName') if my_node else None}")
+        return jsonify(result)
+    except Exception as e:
+        print(f"[STATUS] Error getting status for session '{session_name}': {e}")
         return jsonify({"connected": False})
 
 
 @app.route("/api/nodes")
 def nodes():
     """Get all nodes with optional filtering."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i or not i.nodes:
         return jsonify([])
@@ -947,7 +1201,8 @@ def traceroute():
 @app.route("/api/traceroute/results")
 def traceroute_results_endpoint():
     """Get all traceroute results."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     return jsonify(session_data["traceroute_results"])
 
 
@@ -1089,7 +1344,8 @@ def sweep():
 @app.route("/api/sweep/status")
 def sweep_status_endpoint():
     """Get current sweep status."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     return jsonify(session_data["sweep_status"])
 
 
@@ -1104,7 +1360,9 @@ def sweep_stop():
 @app.route("/api/send", methods=["POST"])
 def send_message():
     """Send a text message to the mesh or a specific node."""
-    session_data = get_session_data()
+    data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i:
         return jsonify({"error": "Not connected"}), 400
@@ -1157,7 +1415,8 @@ def send_message():
 @app.route("/api/packets")
 def packets():
     """Get recent packet log."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     since = request.args.get("since")
     if since:
         filtered = [p for p in session_data["packet_log"] if p["time"] > since]
@@ -1168,7 +1427,8 @@ def packets():
 @app.route("/api/device/config")
 def device_config():
     """Get device configuration (localConfig, moduleConfig, channels)."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i:
         return jsonify({"error": "Not connected"}), 400
@@ -1224,7 +1484,8 @@ def device_config():
 @app.route("/api/node/<node_id>")
 def node_detail(node_id):
     """Get detailed info for a specific node."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i or not i.nodes:
         return jsonify({"error": "Not connected"}), 400
@@ -1251,7 +1512,8 @@ def node_detail(node_id):
 @app.route("/api/mqtt/health", methods=["GET"])
 def get_mqtt_health():
     """Get MQTT health status and metrics."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     
     now = time.time()
     
@@ -1346,10 +1608,75 @@ def get_mqtt_bridge_status():
     })
 
 
+@app.route("/api/store-forward/status")
+def get_store_forward_status():
+    """Get Store & Forward module status and statistics."""
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
+    i = session_data["iface"]
+    if not i:
+        return jsonify({"error": "Not connected"}), 400
+    
+    try:
+        sf_config = None
+        print(f"[STORE&FORWARD] Checking Store & Forward status for session '{session_name}'")
+        print(f"[STORE&FORWARD] Has localNode: {hasattr(i, 'localNode')}")
+        
+        if hasattr(i, 'localNode') and i.localNode:
+            print(f"[STORE&FORWARD] Has moduleConfig: {hasattr(i.localNode, 'moduleConfig')}")
+            if hasattr(i.localNode, 'moduleConfig'):
+                # Check for store_forward using protobuf HasField method
+                has_sf = i.localNode.moduleConfig.HasField('store_forward')
+                print(f"[STORE&FORWARD] Has store_forward field: {has_sf}")
+                
+                if has_sf:
+                    sf_raw = i.localNode.moduleConfig.store_forward
+                    print(f"[STORE&FORWARD] Raw protobuf fields: {dir(sf_raw)}")
+                    sf_config = MessageToDict(sf_raw)
+                    print(f"[STORE&FORWARD] Full config dict: {sf_config}")
+                else:
+                    print(f"[STORE&FORWARD] store_forward field not set in moduleConfig")
+            else:
+                print(f"[STORE&FORWARD] moduleConfig not found on localNode")
+        else:
+            print(f"[STORE&FORWARD] localNode not available")
+        
+        if not sf_config:
+            result = {
+                "enabled": False,
+                "available": False,
+                "message": "Store & Forward module not available on this device"
+            }
+            print(f"[STORE&FORWARD] Returning: {result}")
+            return jsonify(result)
+        
+        # Get statistics from the module
+        stats = {
+            "enabled": sf_config.get("enabled", False),
+            "available": True,
+            "heartbeat": sf_config.get("heartbeat", False),
+            "records": sf_config.get("records", 0),
+            "historyReturnMax": sf_config.get("historyReturnMax", 0),
+            "historyReturnWindow": sf_config.get("historyReturnWindow", 0),
+            "isServer": sf_config.get("isServer", False)
+        }
+        
+        print(f"[STORE&FORWARD] Returning stats: enabled={stats['enabled']}, available={stats['available']}, isServer={stats['isServer']}, records={stats['records']}")
+        return jsonify(stats)
+    except Exception as e:
+        logger.error(f"Error getting Store & Forward status: {e}")
+        return jsonify({
+            "enabled": False,
+            "available": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/device/mqtt/config", methods=["GET"])
 def get_device_mqtt_config():
     """Get current MQTT configuration from the connected device."""
-    session_data = get_session_data()
+    session_name = request.args.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i:
         return jsonify({"error": "Not connected"}), 400
@@ -1635,17 +1962,203 @@ def test_beacon():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Persistent Session API Endpoints ───────────────────────────────────────
+
+@app.route("/api/sessions")
+def list_sessions():
+    """Get list of all persistent sessions."""
+    with persistent_sessions_lock:
+        session_list = []
+        for name, config in persistent_sessions.items():
+            session_id = config["session_id"]
+            
+            # Check if session is currently connected
+            with sessions_lock:
+                is_connected = session_id in sessions and sessions[session_id]["iface"] is not None
+            
+            session_list.append({
+                "name": name,
+                "session_id": session_id,
+                "host": config["host"],
+                "port": config["port"],
+                "auto_connect": config.get("auto_connect", False),
+                "connected": is_connected,
+                "created_at": config.get("created_at"),
+                "last_connected": config.get("last_connected"),
+                "beacon_enabled": config.get("beacon_enabled", False),
+                "autoresponder_enabled": config.get("autoresponder_enabled", False)
+            })
+        
+        return jsonify({"sessions": session_list})
+
+
+@app.route("/api/sessions/create", methods=["POST"])
+def create_session():
+    """Create a new persistent session."""
+    data = request.json or {}
+    name = data.get("name", "").strip()
+    host = data.get("host", "").strip()
+    port = int(data.get("port", 4403))
+    auto_connect = data.get("auto_connect", False)
+    
+    if not name:
+        return jsonify({"error": "Session name is required"}), 400
+    if not host:
+        return jsonify({"error": "Host is required"}), 400
+    
+    result = create_persistent_session(name, host, port, auto_connect)
+    
+    if "error" in result:
+        return jsonify(result), 400
+    
+    return jsonify(result)
+
+
+@app.route("/api/sessions/<session_name>/delete", methods=["POST"])
+def delete_session(session_name):
+    """Delete a persistent session."""
+    result = delete_persistent_session(session_name)
+    
+    if "error" in result:
+        return jsonify(result), 404
+    
+    return jsonify(result)
+
+
+@app.route("/api/sessions/<session_name>/connect", methods=["POST"])
+def connect_session(session_name):
+    """Connect to a persistent session."""
+    session_id, session_data = get_session_by_name(session_name)
+    
+    if not session_id:
+        return jsonify({"error": "Session not found"}), 404
+    
+    # Get session config
+    with persistent_sessions_lock:
+        session_config = persistent_sessions.get(session_name)
+        if not session_config:
+            return jsonify({"error": "Session config not found"}), 404
+        
+        host = session_config["host"]
+        port = session_config["port"]
+    
+    # Ensure session data exists
+    with sessions_lock:
+        if session_id not in sessions:
+            sessions[session_id] = create_session_data()
+        session_data = sessions[session_id]
+    
+    # Close existing connection if any
+    if session_data["iface"]:
+        try:
+            session_data["iface"].close()
+        except:
+            pass
+        session_data["iface"] = None
+    
+    try:
+        # Create interface
+        session_data["iface"] = meshtastic.tcp_interface.TCPInterface(
+            hostname=host, portNumber=port
+        )
+        
+        # Store session_id with the interface
+        session_data["iface"]._session_id = session_id
+        logger.info(f"Connected persistent session '{session_name}' ({session_id[:8]}) to {host}:{port}")
+        
+        session_data["mqtt_health"]["connection_start"] = time.time()
+        session_data["node_ip"] = host
+        session_data["connected_at"] = time.time()
+        time.sleep(2)  # Wait for node DB to populate
+        
+        # Update last connected time
+        update_persistent_session_config(session_name, {
+            "last_connected": datetime.now(timezone.utc).isoformat()
+        })
+        
+        # Start beacon if enabled globally
+        if beacon_config.get("enabled", False):
+            print(f"[BEACON] Beacon is enabled, starting thread for session '{session_name}'")
+            start_beacon(session_id)
+        
+        my_node = get_my_node(session_data)
+        node_count = len(session_data["iface"].nodes) if session_data["iface"].nodes else 0
+        
+        return jsonify({
+            "status": "connected",
+            "session_name": session_name,
+            "session_id": session_id,
+            "myNode": my_node,
+            "nodeCount": node_count
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/sessions/<session_name>/disconnect", methods=["POST"])
+def disconnect_session(session_name):
+    """Disconnect a persistent session."""
+    session_id, session_data = get_session_by_name(session_name)
+    
+    if not session_id or not session_data:
+        return jsonify({"error": "Session not found"}), 404
+    
+    if session_data["iface"]:
+        try:
+            session_data["iface"].close()
+        except:
+            pass
+        session_data["iface"] = None
+    
+    # Stop beacon
+    stop_beacon(session_id)
+    
+    return jsonify({"status": "disconnected"})
+
+
+@app.route("/api/sessions/<session_name>/update", methods=["POST"])
+def update_session(session_name):
+    """Update persistent session configuration."""
+    data = request.json or {}
+    
+    # Only allow updating certain fields
+    allowed_updates = {}
+    if "auto_connect" in data:
+        allowed_updates["auto_connect"] = data["auto_connect"]
+    if "beacon_enabled" in data:
+        allowed_updates["beacon_enabled"] = data["beacon_enabled"]
+    if "beacon_interval" in data:
+        allowed_updates["beacon_interval"] = data["beacon_interval"]
+    if "beacon_message" in data:
+        allowed_updates["beacon_message"] = data["beacon_message"]
+    if "beacon_channel" in data:
+        allowed_updates["beacon_channel"] = data["beacon_channel"]
+    if "autoresponder_enabled" in data:
+        allowed_updates["autoresponder_enabled"] = data["autoresponder_enabled"]
+    if "autoresponder_rules" in data:
+        allowed_updates["autoresponder_rules"] = data["autoresponder_rules"]
+    
+    result = update_persistent_session_config(session_name, allowed_updates)
+    
+    if "error" in result:
+        return jsonify(result), 404
+    
+    return jsonify(result)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     # Load configs on startup
     load_autoresponder_config()
     load_beacon_config()
+    load_persistent_sessions()
     
     print("=" * 60)
     print("  Meshtastic Dashboard")
     print("  Open http://localhost:5000 in your browser")
     print(f"  Auto-responder: {'ENABLED' if autoresponder_config.get('enabled') else 'DISABLED'} ({len(autoresponder_config.get('rules', []))} rules)")
     print(f"  Beacon: {'ENABLED' if beacon_config.get('enabled') else 'DISABLED'} (interval: {beacon_config.get('interval_minutes', 60)}min)")
+    print(f"  Persistent Sessions: {len(persistent_sessions)} configured")
     print("=" * 60)
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True, threaded=True)

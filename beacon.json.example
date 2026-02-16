@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "interval_minutes": 30,
+  "message_template": "Beacon from {my_name} ({my_id}) | Battery: {battery}% | Uptime: {uptime} | Time: {time} (https://github.com/lordachoo/meshtastic-control)",
+  "channel": 0,
+  "available_variables": {
+    "{my_name}": "Your node's full name",
+    "{my_id}": "Your node's ID",
+    "{battery}": "Battery level percentage",
+    "{uptime}": "Device uptime",
+    "{time}": "Current time",
+    "{voltage}": "Battery voltage",
+    "{temp}": "Device temperature (if available)",
+    "{lat}": "Latitude (if GPS available)",
+    "{lon}": "Longitude (if GPS available)",
+    "{alt}": "Altitude (if GPS available)"
+  },
+  "last_beacon_time": "2026-02-16T19:33:10.948624+00:00"
+}

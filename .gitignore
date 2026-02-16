@@ -35,8 +35,11 @@ PIPFILE.lock
 # Auto-responder config
 autoresponder.json
 
-# Beacon config
+# Beacon configuration
 beacon.json
+
+# Persistent sessions
+persistent_sessions.json
 htmlcov/
 .tox/
 .nox/
