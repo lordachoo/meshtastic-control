@@ -1,0 +1,2795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meshtastic Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-card: #151d2e;
+  --bg-card-hover: #1a2438;
+  --border: #1e2d45;
+  --border-bright: #2a3f5f;
+  --text-primary: #e2e8f0;
+  --text-secondary: #8b9dc3;
+  --text-dim: #4a5f82;
+  --accent-green: #00e676;
+  --accent-green-dim: #00e67620;
+  --accent-blue: #448aff;
+  --accent-blue-dim: #448aff20;
+  --accent-amber: #ffab00;
+  --accent-amber-dim: #ffab0020;
+  --accent-red: #ff5252;
+  --accent-red-dim: #ff525220;
+  --accent-cyan: #18ffff;
+  --accent-purple: #b388ff;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Space Grotesk', system-ui, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Scanline overlay ──────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 230, 118, 0.008) 2px,
+    rgba(0, 230, 118, 0.008) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Top Bar ───────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-brand svg { width: 28px; height: 28px; }
+
+.topbar-brand h1 {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  color: var(--accent-green);
+}
+
+.topbar-brand span {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.connection-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.connection-bar input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  width: 180px;
+  transition: border-color 0.2s;
+}
+
+.connection-bar input:focus {
+  outline: none;
+  border-color: var(--accent-green);
+}
+
+.btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.btn:hover { border-color: var(--accent-green); color: var(--accent-green); }
+.btn:active { transform: scale(0.97); }
+
+.btn-primary {
+  background: var(--accent-green);
+  color: var(--bg-primary);
+  border-color: var(--accent-green);
+  font-weight: 600;
+}
+
+.btn-primary:hover { background: #00c864; border-color: #00c864; color: var(--bg-primary); }
+
+.btn-danger {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+.btn-danger:hover { background: var(--accent-red-dim); }
+
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-red);
+}
+
+.status-dot.connected {
+  background: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green-dim);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ── Layout ────────────────────────────────────────────────────── */
+.app-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+
+.tab {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 10px 20px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tab:hover { color: var(--text-secondary); }
+.tab.active {
+  color: var(--accent-green);
+  border-bottom-color: var(--accent-green);
+}
+
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ── Stats Row ─────────────────────────────────────────────────── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  transition: border-color 0.2s;
+}
+
+.stat-card:hover { border-color: var(--border-bright); }
+
+.stat-card .label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.stat-card .value {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent-green);
+}
+
+.stat-card .value.blue { color: var(--accent-blue); }
+.stat-card .value.amber { color: var(--accent-amber); }
+.stat-card .value.cyan { color: var(--accent-cyan); }
+
+.stat-card .sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* ── Node Table ────────────────────────────────────────────────── */
+.table-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  gap: 2px;
+}
+
+.filter-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.filter-btn:first-child { border-radius: 4px 0 0 4px; }
+.filter-btn:last-child { border-radius: 0 4px 4px 0; }
+
+.filter-btn:hover { color: var(--text-secondary); }
+.filter-btn.active {
+  background: var(--accent-green-dim);
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+
+.node-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.node-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.node-table th:hover { color: var(--text-secondary); }
+
+.node-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-table tr:hover { background: var(--bg-card-hover); }
+
+.node-table .rf-indicator {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.rf-indicator.direct { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green-dim); }
+.rf-indicator.hopped { background: var(--accent-amber); }
+.rf-indicator.mqtt { background: var(--text-dim); }
+
+.badge {
+  display: inline-block;
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.badge-mqtt { background: var(--text-dim); color: var(--bg-primary); }
+.badge-rf { background: var(--accent-green-dim); color: var(--accent-green); border: 1px solid var(--accent-green); }
+.badge-favorite { background: var(--accent-amber-dim); color: var(--accent-amber); }
+
+.snr-bar {
+  display: inline-block;
+  height: 4px;
+  border-radius: 2px;
+  min-width: 4px;
+  max-width: 60px;
+}
+
+/* ── Traceroute Panel ──────────────────────────────────────────── */
+.traceroute-section {
+  display: grid;
+  grid-template-columns: 350px 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .traceroute-section { grid-template-columns: 1fr; }
+}
+
+.tr-sidebar {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.tr-sidebar h3 {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent-cyan);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tr-input-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tr-input-group input {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+.tr-input-group input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.sweep-controls {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sweep-controls h4 {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-amber);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.sweep-progress {
+  margin-top: 12px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-primary);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: 2px;
+  transition: width 0.5s;
+}
+
+.progress-text {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Modal styles */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--accent-purple);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.modal-close:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.modal-footer {
+  padding: 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"] {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.form-group input[type="checkbox"] {
+  margin-right: 8px;
+}
+
+.form-group .checkbox-label {
+  display: flex;
+  align-items: center;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.form-help {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.tr-results {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  min-height: 400px;
+}
+
+.tr-results h3 {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent-green);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tr-result-entry {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: border-color 0.2s;
+}
+
+.tr-result-entry:hover { border-color: var(--border-bright); }
+
+.tr-result-entry .tr-dest {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.tr-result-entry .tr-route {
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.tr-result-entry .tr-snr {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.tr-result-entry.pending { border-left: 3px solid var(--accent-amber); }
+.tr-result-entry.complete { border-left: 3px solid var(--accent-green); }
+.tr-result-entry.timeout { border-left: 3px solid var(--accent-red); }
+.tr-result-entry.error { border-left: 3px solid var(--accent-red); }
+
+/* ── Messages ──────────────────────────────────────────────── */
+.msg-entry {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin: 8px 14px;
+  font-family: var(--mono);
+  transition: border-color 0.2s;
+}
+
+.msg-entry:hover { border-color: var(--border-bright); }
+
+.msg-entry.broadcast { border-left: 3px solid var(--accent-amber); }
+.msg-entry.direct { border-left: 3px solid var(--accent-cyan); }
+.msg-entry.outgoing { border-left: 3px solid var(--accent-green); background: rgba(34, 197, 94, 0.05); }
+
+.msg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+
+.msg-from {
+  color: var(--accent-cyan);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.msg-to {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.msg-time {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.msg-text {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.msg-meta {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 12px;
+}
+
+/* ── Device Settings ───────────────────────────────────────── */
+.device-settings {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 700px;
+  overflow-y: auto;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+  z-index: 5;
+}
+
+.settings-header h3 {
+  font-size: 13px;
+  color: var(--accent-purple);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.settings-section {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.setting-label {
+  color: var(--text-dim);
+  flex: 1;
+}
+
+.setting-value {
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+  max-width: 60%;
+  word-wrap: break-word;
+}
+
+.setting-value.enabled {
+  color: var(--accent-green);
+}
+
+.setting-value.disabled {
+  color: var(--text-dim);
+}
+
+.channel-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.channel-card.primary {
+  border-left: 3px solid var(--accent-green);
+}
+
+.channel-card.secondary {
+  border-left: 3px solid var(--accent-cyan);
+}
+
+.channel-card.disabled {
+  opacity: 0.5;
+}
+
+.channel-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  margin-bottom: 8px;
+}
+
+/* ── Packet Log ────────────────────────────────────────────── */
+.packet-log {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.packet-log .pkt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+  z-index: 5;
+}
+
+.packet-log .pkt-header h3 {
+  font-size: 12px;
+  color: var(--accent-purple);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pkt-entry {
+  display: grid;
+  grid-template-columns: 80px 90px 90px 120px 60px 1fr;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  transition: background 0.1s;
+}
+
+.pkt-entry:hover { background: var(--bg-card-hover); }
+
+.pkt-entry .pkt-time { color: var(--text-dim); }
+.pkt-entry .pkt-from { color: var(--accent-cyan); }
+.pkt-entry .pkt-to { color: var(--text-secondary); }
+.pkt-entry .pkt-port { color: var(--accent-amber); font-size: 10px; }
+.pkt-entry .pkt-snr { color: var(--text-dim); }
+.pkt-entry .pkt-text { color: var(--accent-green); overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Send Message ──────────────────────────────────────────────── */
+.send-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.send-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.send-row input[type="text"] {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 4px;
+}
+
+.send-row input:focus {
+  outline: none;
+  border-color: var(--accent-green);
+}
+
+.send-row select {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+}
+
+/* ── Empty state ───────────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+.empty-state p { font-size: 13px; margin-bottom: 8px; }
+
+/* ── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+/* ── Loading spinner ───────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Toast notifications ───────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 10px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  animation: slideIn 0.3s ease;
+  max-width: 350px;
+}
+
+.toast.success { border-color: var(--accent-green); }
+.toast.error { border-color: var(--accent-red); color: var(--accent-red); }
+.toast.info { border-color: var(--accent-blue); }
+
+@keyframes slideIn {
+  from { transform: translateX(100px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Top Bar ──────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="topbar-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-green)">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+    </svg>
+    <div>
+      <h1>MESHTASTIC DASHBOARD</h1>
+      <span id="version-info">v1.0 &middot; RF Testing, Node Management &amp; Messaging</span>
+    </div>
+  </div>
+  <div class="connection-bar">
+    <div class="status-dot" id="status-dot"></div>
+    <input type="text" id="host-input" placeholder="192.168.1.134" value="192.168.1.134">
+    <input type="text" id="port-input" placeholder="4403" value="4403" style="width: 70px;">
+    <button class="btn btn-primary" id="connect-btn" onclick="toggleConnect()">CONNECT</button>
+  </div>
+</div>
+
+<!-- ── Main Layout ─────────────────────────────────────────────── -->
+<div class="app-layout">
+
+  <!-- Stats -->
+  <div class="stats-row" id="stats-row" style="display:none;">
+    <div class="stat-card">
+      <div class="label">My Node</div>
+      <div class="value" id="stat-mynode" style="font-size:14px;">--</div>
+      <div class="sub" id="stat-mynode-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Total Nodes</div>
+      <div class="value blue" id="stat-total">0</div>
+      <div class="sub" id="stat-total-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">RF Nodes</div>
+      <div class="value" id="stat-rf">0</div>
+      <div class="sub" id="stat-rf-sub">0 direct</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Via MQTT</div>
+      <div class="value amber" id="stat-mqtt">0</div>
+      <div class="sub">Internet relay</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">MQTT Health</div>
+      <div class="value" id="mqtt-health-status" style="color: var(--text-dim);">--</div>
+      <div class="sub" id="mqtt-health-sub">Checking...</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Battery</div>
+      <div class="value cyan" id="stat-battery">--%</div>
+      <div class="sub" id="stat-voltage"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Ch. Util</div>
+      <div class="value" id="stat-chanutil" style="color: var(--accent-purple);">--%</div>
+      <div class="sub" id="stat-airtx"></div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tab-bar" id="tab-bar" style="display:none;">
+    <div class="tab active" data-tab="nodes" onclick="switchTab('nodes')">Nodes</div>
+    <div class="tab" data-tab="messages" onclick="switchTab('messages')">Messages</div>
+    <div class="tab" data-tab="traceroute" onclick="switchTab('traceroute')">RF Traceroute</div>
+    <div class="tab" data-tab="packets" onclick="switchTab('packets')">Packet Log</div>
+    <div class="tab" data-tab="device" onclick="switchTab('device')">Device Settings</div>
+  </div>
+
+  <!-- ── Nodes Tab ─────────────────────────────────────────────── -->
+  <div class="tab-content active" id="tab-nodes">
+    <div id="nodes-content" style="display:none;">
+      <div class="table-controls">
+        <div class="filter-group">
+          <div class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</div>
+          <div class="filter-btn" data-filter="rf" onclick="setFilter('rf')">RF Only</div>
+          <div class="filter-btn" data-filter="mqtt" onclick="setFilter('mqtt')">MQTT</div>
+          <div class="filter-btn" data-filter="local" onclick="setFilter('local')">Nearby</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span id="node-count-label" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);"></span>
+          <button class="btn btn-sm" onclick="refreshNodes()">REFRESH</button>
+        </div>
+      </div>
+
+      <div style="overflow-x:auto;">
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Name</th>
+              <th>ID</th>
+              <th>Hardware</th>
+              <th>Hops</th>
+              <th>SNR</th>
+              <th>Distance</th>
+              <th>Battery</th>
+              <th>Last Heard</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="node-table-body">
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="empty-state" id="nodes-empty">
+      <div class="icon">📡</div>
+      <p>Connect to your Meshtastic node to see the mesh</p>
+      <p style="font-size:11px;">Enter your node's IP address above and click Connect</p>
+    </div>
+  </div>
+
+  <!-- ── Messages Tab ──────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-messages">
+    <div class="packet-log" style="max-height: 600px;">
+      <div class="pkt-header">
+        <h3>📨 Mesh Messages</h3>
+        <button class="btn btn-sm" onclick="clearMessages()">CLEAR</button>
+      </div>
+      <div id="message-list">
+        <div class="empty-state" style="padding:40px;">
+          <p>Messages will appear here when connected</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="send-section">
+      <div class="send-row">
+        <input type="text" id="msg-dest" placeholder="Destination (!nodeID or blank for broadcast)" style="width:250px;">
+        <input type="text" id="msg-text" placeholder="Message text...">
+        <button class="btn btn-primary" onclick="sendMessageFromTab()">SEND</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Traceroute Tab ────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-traceroute">
+    <div class="traceroute-section">
+      <div class="tr-sidebar">
+        <h3>📍 Single Traceroute</h3>
+        <div class="tr-input-group">
+          <input type="text" id="tr-dest" placeholder="!040944e0">
+          <button class="btn btn-primary btn-sm" onclick="sendTraceroute()">TRACE</button>
+        </div>
+
+        <div class="sweep-controls">
+          <h4>🔄 RF Sweep</h4>
+          <p style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">
+            Traceroute all RF-reachable nodes to map your signal reach.
+            This takes a while — each node gets ~30s timeout.
+          </p>
+          <button class="btn" id="sweep-btn" onclick="startSweep()">START SWEEP</button>
+          <button class="btn btn-danger btn-sm" id="sweep-stop-btn" onclick="stopSweep()" style="display:none;">STOP</button>
+
+          <div class="sweep-progress" id="sweep-progress" style="display:none;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="sweep-progress-fill" style="width:0%"></div>
+            </div>
+            <div class="progress-text" id="sweep-progress-text">0 / 0</div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+          <h4 style="font-family:var(--mono);font-size:11px;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;">Quick Targets</h4>
+          <div id="quick-targets" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;">
+            <span style="font-size:11px;color:var(--text-dim);">Connect to populate...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tr-results">
+        <h3>Route Results</h3>
+        <div id="tr-results-list">
+          <div class="empty-state" style="padding:40px;">
+            <p>Run a traceroute or sweep to see results</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Packets Tab ───────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-packets">
+    <div class="packet-log" id="packet-log">
+      <div class="pkt-header">
+        <h3>Live Packet Stream</h3>
+        <button class="btn btn-sm" onclick="clearPackets()">CLEAR</button>
+      </div>
+      <div id="packet-list">
+        <div class="empty-state" style="padding:40px;">
+          <p>Packets will appear here when connected</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="send-section">
+      <div class="send-row">
+        <input type="text" id="send-dest" placeholder="Destination (!nodeID or blank for broadcast)" style="width:250px;">
+        <input type="text" id="send-text" placeholder="Message text...">
+        <button class="btn btn-primary" onclick="sendMessage()">SEND</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Device Settings Tab ────────────────────────────────────── -->
+  <div class="tab-content" id="tab-device">
+    <div class="device-settings">
+      <div class="settings-header">
+        <h3>⚙️ Device Configuration</h3>
+        <button class="btn btn-sm" onclick="refreshDeviceSettings()">REFRESH</button>
+      </div>
+      
+      <div id="device-settings-content">
+        <div class="empty-state" style="padding:40px;">
+          <p>Loading device settings...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────
+let connected = false;
+let currentFilter = 'all';
+let allNodes = [];
+let pollInterval = null;
+let packetPollInterval = null;
+let sweepPollInterval = null;
+
+// ── Toast Notifications ────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ── Connection ─────────────────────────────────────────────────────────
+async function toggleConnect() {
+  if (connected) {
+    await fetch('/api/disconnect', { method: 'POST' });
+    setDisconnected();
+    toast('Disconnected', 'info');
+    return;
+  }
+
+  const host = document.getElementById('host-input').value;
+  const port = document.getElementById('port-input').value;
+  const btn = document.getElementById('connect-btn');
+  btn.textContent = 'CONNECTING...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, port })
+    });
+    const data = await res.json();
+
+    if (data.status === 'connected') {
+      setConnected(data);
+      toast(`Connected to ${data.myNode?.longName || host}`, 'success');
+    } else {
+      toast(`Connection failed: ${data.message}`, 'error');
+      btn.textContent = 'CONNECT';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    btn.textContent = 'CONNECT';
+    btn.disabled = false;
+  }
+}
+
+function setConnected(data) {
+  connected = true;
+  document.getElementById('status-dot').classList.add('connected');
+  document.getElementById('connect-btn').textContent = 'DISCONNECT';
+  document.getElementById('connect-btn').disabled = false;
+  document.getElementById('connect-btn').className = 'btn btn-danger';
+  document.getElementById('stats-row').style.display = '';
+  document.getElementById('tab-bar').style.display = '';
+  document.getElementById('nodes-content').style.display = '';
+  document.getElementById('nodes-empty').style.display = 'none';
+
+  if (data.myNode) {
+    document.getElementById('stat-mynode').textContent = data.myNode.longName;
+    document.getElementById('stat-mynode-sub').textContent = data.myNode.id;
+  }
+
+  refreshNodes();
+  refreshStatus();
+  refreshMqttHealth();
+
+  // Start polling
+  pollInterval = setInterval(() => {
+    refreshNodes();
+    refreshStatus();
+    refreshTraceroutes();
+    refreshMqttHealth();
+  }, 10000);
+
+  packetPollInterval = setInterval(() => {
+    refreshPackets();
+    refreshMessages();
+  }, 3000);
+}
+
+function setDisconnected() {
+  connected = false;
+  document.getElementById('status-dot').classList.remove('connected');
+  document.getElementById('connect-btn').textContent = 'CONNECT';
+  document.getElementById('connect-btn').disabled = false;
+  document.getElementById('connect-btn').className = 'btn btn-primary';
+  document.getElementById('stats-row').style.display = 'none';
+  document.getElementById('tab-bar').style.display = 'none';
+  document.getElementById('nodes-content').style.display = 'none';
+  document.getElementById('nodes-empty').style.display = '';
+
+  if (pollInterval) clearInterval(pollInterval);
+  if (packetPollInterval) clearInterval(packetPollInterval);
+  if (sweepPollInterval) clearInterval(sweepPollInterval);
+}
+
+// ── Status Refresh ─────────────────────────────────────────────────────
+async function refreshStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (!data.connected) { setDisconnected(); return; }
+
+    document.getElementById('stat-total').textContent = data.nodeCount;
+
+    if (data.myNode) {
+      document.getElementById('stat-battery').textContent =
+        data.myNode.batteryLevel != null ? (data.myNode.batteryLevel > 100 ? '🔌 Plugged In' : data.myNode.batteryLevel + '%') : '--';
+      document.getElementById('stat-voltage').textContent =
+        data.myNode.voltage != null ? data.myNode.voltage.toFixed(2) + 'V' : '';
+      document.getElementById('stat-chanutil').textContent =
+        data.myNode.channelUtil != null ? data.myNode.channelUtil.toFixed(1) + '%' : '--';
+      document.getElementById('stat-airtx').textContent =
+        data.myNode.airUtilTx != null ? 'TX: ' + data.myNode.airUtilTx.toFixed(2) + '%' : '';
+    }
+  } catch (e) { /* silent */ }
+}
+
+async function refreshMqttHealth() {
+  try {
+    const res = await fetch('/api/mqtt/health');
+    const data = await res.json();
+    
+    const statusEl = document.getElementById('mqtt-health-status');
+    const subEl = document.getElementById('mqtt-health-sub');
+    
+    // Set color based on health
+    const colors = {
+      'healthy': 'var(--accent-green)',
+      'slow': 'var(--accent-amber)',
+      'stalled': 'var(--accent-red)',
+      'unknown': 'var(--text-dim)'
+    };
+    statusEl.style.color = colors[data.health_status] || 'var(--text-dim)';
+    
+    // Set status icon
+    const icons = {
+      'healthy': '🟢',
+      'slow': '🟡',
+      'stalled': '🔴',
+      'unknown': '⚪'
+    };
+    statusEl.textContent = icons[data.health_status] || '--';
+    
+    // Set subtitle with message count or time since last
+    if (data.last_mqtt_ago !== null && data.last_mqtt_ago < 3600) {
+      const mins = Math.floor(data.last_mqtt_ago / 60);
+      subEl.textContent = mins === 0 ? 'Just now' : `${mins}m ago`;
+    } else if (data.mqtt_count > 0) {
+      subEl.textContent = `${data.mqtt_count} msgs`;
+    } else {
+      subEl.textContent = data.health_message;
+    }
+  } catch (e) { /* silent */ }
+}
+
+// ── Node List ──────────────────────────────────────────────────────────
+async function refreshNodes() {
+  if (!connected) return;
+  try {
+    const res = await fetch(`/api/nodes?filter=${currentFilter}`);
+    allNodes = await res.json();
+    renderNodes();
+  } catch (e) { /* silent */ }
+}
+
+function renderNodes() {
+  const tbody = document.getElementById('node-table-body');
+  const rfCount = allNodes.filter(n => !n.viaMqtt).length;
+  const mqttCount = allNodes.filter(n => n.viaMqtt).length;
+  const directCount = allNodes.filter(n => !n.viaMqtt && (n.hopsAway === 0 || n.hopsAway === null)).length;
+
+  document.getElementById('stat-rf').textContent = rfCount;
+  document.getElementById('stat-rf-sub').textContent = `${directCount} direct, ${rfCount - directCount} multi-hop`;
+  document.getElementById('stat-mqtt').textContent = mqttCount;
+  document.getElementById('stat-total-sub').textContent = `${rfCount} RF / ${mqttCount} MQTT`;
+  document.getElementById('node-count-label').textContent = `Showing ${allNodes.length} nodes`;
+
+  tbody.innerHTML = allNodes.map(n => {
+    const isRf = !n.viaMqtt;
+    const isDirect = isRf && (n.hopsAway === 0 || n.hopsAway === null);
+    const indicatorClass = isDirect ? 'direct' : (isRf ? 'hopped' : 'mqtt');
+    const badge = isRf ?
+      `<span class="badge badge-rf">RF</span>` :
+      `<span class="badge badge-mqtt">MQTT</span>`;
+    const fav = n.isFavorite ? ' <span class="badge badge-favorite">★</span>' : '';
+
+    const snrVal = n.snr != null ? n.snr.toFixed(1) + ' dB' : '--';
+    const snrColor = n.snr != null ? (n.snr > 5 ? 'var(--accent-green)' : n.snr > 0 ? 'var(--accent-amber)' : 'var(--accent-red)') : 'var(--text-dim)';
+
+    const dist = n.distance_km != null ? (n.distance_km < 1 ? (n.distance_km * 1000).toFixed(0) + 'm' : n.distance_km.toFixed(1) + 'km') : '--';
+
+    const batt = n.batteryLevel != null ? (n.batteryLevel > 100 ? '🔌' : n.batteryLevel + '%') : '--';
+    const battColor = n.batteryLevel != null ? (n.batteryLevel > 100 || n.batteryLevel > 50 ? 'var(--accent-green)' : n.batteryLevel > 20 ? 'var(--accent-amber)' : 'var(--accent-red)') : 'var(--text-dim)';
+
+    const lastHeard = n.lastHeard ? timeAgo(n.lastHeard) : '--';
+
+    return `<tr>
+      <td><span class="rf-indicator ${indicatorClass}"></span>${badge}${fav}</td>
+      <td title="${n.longName}">${n.longName}</td>
+      <td style="color:var(--text-dim)">${n.id}</td>
+      <td style="color:var(--text-dim);font-size:10px;">${n.hwModel}</td>
+      <td>${n.hopsAway != null ? n.hopsAway : '--'}</td>
+      <td style="color:${snrColor}">${snrVal}</td>
+      <td>${dist}</td>
+      <td style="color:${battColor}">${batt}</td>
+      <td style="color:var(--text-dim)">${lastHeard}</td>
+      <td>
+        <button class="btn btn-sm" onclick="sendMessageTo('${n.id}')" style="margin-right:4px;">MSG</button>
+        <button class="btn btn-sm" onclick="sendTracerouteTo('${n.id}')">TRACE</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Update quick targets for traceroute tab
+  renderQuickTargets();
+}
+
+function renderQuickTargets() {
+  const el = document.getElementById('quick-targets');
+  const rfNodes = allNodes.filter(n => !n.viaMqtt);
+  if (rfNodes.length === 0) {
+    el.innerHTML = '<span style="font-size:11px;color:var(--text-dim);">No RF nodes found</span>';
+    return;
+  }
+  el.innerHTML = rfNodes.map(n =>
+    `<button class="btn btn-sm" style="text-align:left;justify-content:flex-start;" onclick="sendTracerouteTo('${n.id}')">
+      ${n.shortName} &middot; ${n.longName} ${n.hopsAway != null ? '(' + n.hopsAway + 'h)' : ''}
+    </button>`
+  ).join('');
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  refreshNodes();
+}
+
+function timeAgo(ts) {
+  const now = Date.now() / 1000;
+  const diff = now - ts;
+  if (diff < 60) return Math.floor(diff) + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+// ── Traceroute ─────────────────────────────────────────────────────────
+async function sendTraceroute() {
+  const dest = document.getElementById('tr-dest').value.trim();
+  if (!dest) { toast('Enter a destination node ID', 'error'); return; }
+  await doTraceroute(dest);
+}
+
+function sendMessageTo(nodeId) {
+  switchTab('messages');
+  document.getElementById('msg-dest').value = nodeId;
+  document.getElementById('msg-text').focus();
+}
+
+function sendTracerouteTo(nodeId) {
+  switchTab('traceroute');
+  document.getElementById('tr-dest').value = nodeId;
+  doTraceroute(nodeId);
+}
+
+async function doTraceroute(dest) {
+  try {
+    const res = await fetch('/api/traceroute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dest, hopLimit: 6 })
+    });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast(`Traceroute sent to ${dest}`, 'info');
+
+    // Poll for result
+    setTimeout(refreshTraceroutes, 2000);
+    setTimeout(refreshTraceroutes, 5000);
+    setTimeout(refreshTraceroutes, 10000);
+    setTimeout(refreshTraceroutes, 20000);
+    setTimeout(refreshTraceroutes, 30000);
+  } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+}
+
+async function cancelTraceroute(nodeId) {
+  try {
+    const res = await fetch('/api/traceroute/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId })
+    });
+    const data = await res.json();
+    if (data.status === 'cancelled') {
+      toast(`Traceroute to ${nodeId} cancelled`, 'info');
+      refreshTraceroutes();
+    }
+  } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+}
+
+async function refreshTraceroutes() {
+  try {
+    const res = await fetch('/api/traceroute/results');
+    const results = await res.json();
+    renderTraceroutes(results);
+  } catch (e) { /* silent */ }
+}
+
+function renderTraceroutes(results) {
+  const el = document.getElementById('tr-results-list');
+  const entries = Object.entries(results);
+
+  if (entries.length === 0) {
+    el.innerHTML = '<div class="empty-state" style="padding:40px;"><p>Run a traceroute or sweep to see results</p></div>';
+    return;
+  }
+
+  // Sort by timestamp descending
+  entries.sort((a, b) => (b[1].timestamp || '').localeCompare(a[1].timestamp || ''));
+
+  el.innerHTML = entries.map(([nodeId, r]) => {
+    const status = r.status || 'unknown';
+    let routeHtml = '';
+
+    if (status === 'complete') {
+      const snrList = r.snrTowards || r.snrBack || [];
+      routeHtml = `<div class="tr-route">→ Direct (${snrList.length > 0 ? snrList.map(s => s/4 + 'dB').join(' → ') : 'route complete'})</div>`;
+      if (r.route && r.route.length > 0) {
+        const hops = r.route.map(h => '!' + h.toString(16).padStart(8, '0'));
+        routeHtml = `<div class="tr-route">→ ${hops.join(' → ')} → ${nodeId}</div>`;
+      }
+    } else if (status === 'pending') {
+      routeHtml = `<div class="tr-route">
+        <span class="spinner"></span> Waiting for response...
+        <button class="btn btn-sm btn-danger" onclick="cancelTraceroute('${nodeId}')" style="margin-left:8px;padding:2px 8px;font-size:10px;">CANCEL</button>
+      </div>`;
+    } else if (status === 'cancelled') {
+      routeHtml = '<div class="tr-route" style="color:var(--text-dim)">✗ Cancelled by user</div>';
+    } else if (status === 'timeout') {
+      routeHtml = '<div class="tr-route" style="color:var(--accent-red)">⏱ Timeout — node did not respond</div>';
+    } else if (status === 'error') {
+      routeHtml = `<div class="tr-route" style="color:var(--accent-red)">✗ Error: ${r.error || 'unknown'}</div>`;
+    }
+
+    // Look up node name
+    const node = allNodes.find(n => n.id === nodeId);
+    const name = node ? node.longName : nodeId;
+    
+    // Add command info if available
+    const cmdHtml = r.command ? `<div class="tr-snr" style="color:var(--text-dim);font-family:var(--mono);font-size:9px;">$ ${r.command}</div>` : '';
+
+    return `<div class="tr-result-entry ${status}">
+      <div><span class="tr-dest">${name}</span> <span style="color:var(--text-dim);font-size:10px;">${nodeId}</span></div>
+      ${routeHtml}
+      ${cmdHtml}
+      <div class="tr-snr">${r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── RF Sweep ───────────────────────────────────────────────────────────
+async function startSweep() {
+  try {
+    const res = await fetch('/api/sweep', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+
+    toast(`Sweep started — ${data.total} nodes to test`, 'info');
+    document.getElementById('sweep-btn').style.display = 'none';
+    document.getElementById('sweep-stop-btn').style.display = '';
+    document.getElementById('sweep-progress').style.display = '';
+
+    sweepPollInterval = setInterval(refreshSweepStatus, 2000);
+  } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+}
+
+async function stopSweep() {
+  await fetch('/api/sweep/stop', { method: 'POST' });
+  toast('Sweep stopped', 'info');
+  document.getElementById('sweep-btn').style.display = '';
+  document.getElementById('sweep-stop-btn').style.display = 'none';
+  if (sweepPollInterval) clearInterval(sweepPollInterval);
+}
+
+async function refreshSweepStatus() {
+  try {
+    const res = await fetch('/api/sweep/status');
+    const data = await res.json();
+
+    const pct = data.total > 0 ? (data.completed / data.total * 100) : 0;
+    document.getElementById('sweep-progress-fill').style.width = pct + '%';
+    document.getElementById('sweep-progress-text').textContent =
+      `${data.completed} / ${data.total}${data.current ? ' — testing ' + data.current : ''}`;
+
+    if (!data.running) {
+      document.getElementById('sweep-btn').style.display = '';
+      document.getElementById('sweep-stop-btn').style.display = 'none';
+      if (sweepPollInterval) clearInterval(sweepPollInterval);
+      toast('Sweep complete!', 'success');
+    }
+
+    // Also refresh traceroute results display
+    refreshTraceroutes();
+  } catch (e) { /* silent */ }
+}
+
+// ── Messages Tab ───────────────────────────────────────────────────────
+let lastMessageTime = null;
+let displayedMessageIds = new Set();
+
+async function refreshMessages() {
+  if (!connected) return;
+  try {
+    const url = lastMessageTime ? `/api/packets?since=${lastMessageTime}` : '/api/packets';
+    const res = await fetch(url);
+    const packets = await res.json();
+
+    // Filter only text messages
+    const messages = packets.filter(p => p.portnum === 'TEXT_MESSAGE_APP' && p.text);
+    
+    if (messages.length === 0) return;
+
+    const el = document.getElementById('message-list');
+    if (el.querySelector('.empty-state')) el.innerHTML = '';
+
+    // Filter out messages we've already displayed
+    const newMessages = messages.filter(msg => {
+      const msgId = `${msg.from}-${msg.time}-${msg.text}`;
+      if (displayedMessageIds.has(msgId)) return false;
+      displayedMessageIds.add(msgId);
+      return true;
+    });
+
+    if (newMessages.length === 0) return;
+    lastMessageTime = messages[messages.length - 1].time;
+
+    const html = newMessages.map(msg => {
+      const time = new Date(msg.time).toLocaleTimeString();
+      const isBroadcast = msg.to === '^all';
+      const isOutgoing = msg.outgoing === true;
+      
+      // Determine message class
+      let msgClass = 'direct';
+      if (isOutgoing) {
+        msgClass = 'outgoing';
+      } else if (isBroadcast) {
+        msgClass = 'broadcast';
+      }
+      
+      // Look up sender/recipient names
+      const fromNode = allNodes.find(n => n.id === msg.from);
+      const fromName = fromNode ? fromNode.longName : msg.from;
+      
+      const toNode = allNodes.find(n => n.id === msg.to);
+      const toName = isBroadcast ? 'Broadcast' : (toNode ? toNode.longName : msg.to);
+      
+      // Determine if message came via RF or MQTT
+      const isViaMqtt = msg.snr == null && msg.rssi == null && !isOutgoing;
+      const sourceBadge = isViaMqtt ? '<span class="badge badge-mqtt" style="margin-left:6px;font-size:9px;">MQTT</span>' : 
+                          !isOutgoing ? '<span class="badge badge-rf" style="margin-left:6px;font-size:9px;">RF</span>' : '';
+      
+      // Add reply button for incoming direct messages only (not broadcasts, not outgoing)
+      const replyBtn = (!isBroadcast && !isOutgoing) ? `<button class="btn btn-sm" onclick="replyToMessage('${msg.from}')" style="margin-left:8px;padding:2px 6px;font-size:10px;">REPLY</button>` : '';
+      
+      // For outgoing messages, show "You" as sender
+      const displayFrom = isOutgoing ? 'You' : fromName;
+      
+      // Build metadata - show source info for MQTT messages
+      let metaHtml = '';
+      if (isViaMqtt) {
+        metaHtml = `<span style="color:var(--accent-purple);">📡 Via Internet (MQTT)</span>`;
+      } else if (!isOutgoing) {
+        metaHtml = `
+          <span>SNR: ${msg.snr != null ? msg.snr + 'dB' : '--'}</span>
+          <span>RSSI: ${msg.rssi != null ? msg.rssi + 'dBm' : '--'}</span>
+          <span>Hops: ${msg.hopStart != null && msg.hopLimit != null ? (msg.hopStart - msg.hopLimit) : '--'}</span>
+        `;
+      } else {
+        // For outgoing messages, show where they went
+        const destType = isBroadcast ? 'Broadcast' : 'Direct';
+        metaHtml = `<span style="color:var(--accent-green);">✓ Sent via RF${isBroadcast ? ' (with MQTT uplink if enabled)' : ''}</span>`;
+      }
+      
+      return `<div class="msg-entry ${msgClass}">
+        <div class="msg-header">
+          <div>
+            <span class="msg-from">${displayFrom}</span>
+            <span class="msg-to"> → ${toName}</span>
+            ${sourceBadge}
+            ${replyBtn}
+          </div>
+          <span class="msg-time">${time}</span>
+        </div>
+        <div class="msg-text">${msg.text}</div>
+        <div class="msg-meta">
+          ${metaHtml}
+        </div>
+      </div>`;
+    }).join('');
+
+    el.insertAdjacentHTML('afterbegin', html);
+
+    // Trim old entries
+    while (el.children.length > 100) {
+      el.removeChild(el.lastChild);
+    }
+  } catch (e) { /* silent */ }
+}
+
+function clearMessages() {
+  document.getElementById('message-list').innerHTML =
+    '<div class="empty-state" style="padding:40px;"><p>Cleared</p></div>';
+  lastMessageTime = null;
+  displayedMessageIds.clear();
+}
+
+function replyToMessage(nodeId) {
+  document.getElementById('msg-dest').value = nodeId;
+  document.getElementById('msg-text').focus();
+  toast(`Replying to ${nodeId}`, 'info');
+}
+
+async function sendMessageFromTab() {
+  const text = document.getElementById('msg-text').value.trim();
+  const dest = document.getElementById('msg-dest').value.trim() || null;
+
+  if (!text) { toast('Enter a message', 'error'); return; }
+
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, dest })
+    });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast(`Message sent${dest ? ' to ' + dest : ' (broadcast)'}`, 'success');
+    document.getElementById('msg-text').value = '';
+  } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+}
+
+// ── Packet Log ─────────────────────────────────────────────────────────
+let lastPacketTime = null;
+
+async function refreshPackets() {
+  if (!connected) return;
+  try {
+    const url = lastPacketTime ? `/api/packets?since=${lastPacketTime}` : '/api/packets';
+    const res = await fetch(url);
+    const packets = await res.json();
+
+    if (packets.length === 0) return;
+    lastPacketTime = packets[packets.length - 1].time;
+
+    const el = document.getElementById('packet-list');
+    // Remove empty state
+    if (el.querySelector('.empty-state')) el.innerHTML = '';
+
+    const html = packets.map(p => {
+      const time = new Date(p.time).toLocaleTimeString();
+      const port = (p.portnum || 'UNKNOWN').replace('_APP', '');
+      return `<div class="pkt-entry">
+        <div class="pkt-time">${time}</div>
+        <div class="pkt-from">${p.from || '?'}</div>
+        <div class="pkt-to">${p.to || '?'}</div>
+        <div class="pkt-port">${port}</div>
+        <div class="pkt-snr">${p.snr != null ? p.snr + 'dB' : ''}</div>
+        <div class="pkt-text">${p.text || ''}</div>
+      </div>`;
+    }).join('');
+
+    el.insertAdjacentHTML('afterbegin', html);
+
+    // Trim old entries
+    while (el.children.length > 200) {
+      el.removeChild(el.lastChild);
+    }
+  } catch (e) { /* silent */ }
+}
+
+function clearPackets() {
+  document.getElementById('packet-list').innerHTML =
+    '<div class="empty-state" style="padding:40px;"><p>Cleared</p></div>';
+  lastPacketTime = null;
+}
+
+// ── Send Message ───────────────────────────────────────────────────────
+async function sendMessage() {
+  const text = document.getElementById('send-text').value.trim();
+  const dest = document.getElementById('send-dest').value.trim() || null;
+
+  if (!text) { toast('Enter a message', 'error'); return; }
+
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, dest })
+    });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast(`Message sent${dest ? ' to ' + dest : ' (broadcast)'}`, 'success');
+    document.getElementById('send-text').value = '';
+  } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+}
+
+// ── Device Settings ────────────────────────────────────────────────────
+async function refreshDeviceSettings() {
+  if (!connected) return;
+  try {
+    const res = await fetch('/api/device/config');
+    const config = await res.json();
+    renderDeviceSettings(config);
+  } catch (e) {
+    document.getElementById('device-settings-content').innerHTML = 
+      '<div class="empty-state" style="padding:40px;"><p>Error loading device settings</p></div>';
+  }
+}
+
+function renderDeviceSettings(config) {
+  const el = document.getElementById('device-settings-content');
+  let html = '';
+
+  // Add message routing summary at the top
+  const mqttEnabled = config.moduleConfig?.mqtt?.enabled;
+  
+  console.log('MQTT Enabled:', mqttEnabled);
+  console.log('All channels:', config.channels);
+  if (config.channels) {
+    config.channels.forEach((ch, idx) => {
+      console.log(`Channel ${idx} role:`, ch.role);
+    });
+  }
+  
+  // Find primary channel - role can be string "1" or number 1 (1=PRIMARY)
+  const primaryChannel = config.channels?.find(ch => ch.role === 1 || ch.role === "1" || (typeof ch.role === 'string' && ch.role.includes('PRIMARY')));
+  console.log('Primary Channel:', primaryChannel);
+  
+  // Use the same logic as the Channels section for uplink/downlink detection
+  let uplinkEnabled = false;
+  let downlinkEnabled = false;
+  
+  if (primaryChannel?.settings) {
+    console.log('Primary channel settings:', primaryChannel.settings);
+    console.log('Checking uplinkEnabled:', primaryChannel.settings.uplinkEnabled);
+    console.log('Checking uplink_enabled:', primaryChannel.settings.uplink_enabled);
+    console.log('Checking UplinkEnabled:', primaryChannel.settings.UplinkEnabled);
+    
+    uplinkEnabled = primaryChannel.settings.uplinkEnabled ?? primaryChannel.settings.uplink_enabled ?? primaryChannel.settings.UplinkEnabled ?? false;
+    downlinkEnabled = primaryChannel.settings.downlinkEnabled ?? primaryChannel.settings.downlink_enabled ?? primaryChannel.settings.DownlinkEnabled ?? false;
+    console.log('FINAL Detected uplink:', uplinkEnabled, 'downlink:', downlinkEnabled);
+  } else {
+    console.log('NO PRIMARY CHANNEL SETTINGS FOUND');
+  }
+  
+  html += `<div class="settings-section" style="background: rgba(139, 92, 246, 0.1); border-left: 3px solid var(--accent-purple);">
+    <div class="settings-section-title">📨 Your Message Routing</div>
+    <div class="setting-row">
+      <span class="setting-label">When you send a BROADCAST message:</span>
+      <span class="setting-value">
+        ${mqttEnabled && uplinkEnabled ? 
+          '<span style="color:var(--accent-green);">✓ Goes to RF mesh AND MQTT (internet)</span>' : 
+          '<span style="color:var(--accent-amber);">⚠ RF mesh only (MQTT uplink disabled)</span>'}
+      </span>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">When you send a DIRECT message:</span>
+      <span class="setting-value">RF only (direct messages don't use MQTT)</span>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Can receive from MQTT:</span>
+      <span class="setting-value ${downlinkEnabled ? 'enabled' : 'disabled'}">${downlinkEnabled ? 'Yes' : 'No'}</span>
+    </div>
+    <div class="setting-row" style="margin-top:12px;">
+      <span class="setting-label">Test MQTT connectivity:</span>
+      <span class="setting-value">
+        <button class="btn btn-sm" onclick="testMqttConnection()" style="background:var(--accent-green);">SEND TEST MESSAGE</button>
+        <span id="mqtt-test-status" style="margin-left:12px;"></span>
+      </span>
+    </div>
+  </div>`;
+  
+  // Add MQTT Health Monitor section
+  html += `<div class="settings-section" style="background: rgba(52, 211, 153, 0.1); border-left: 3px solid var(--accent-green);">
+    <div class="settings-section-title">📡 MQTT Health Monitor</div>
+    <div id="mqtt-health-details">Loading...</div>
+  </div>`;
+  
+  // Add Device Control section
+  html += `<div class="settings-section" style="background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--accent-red);">
+    <div class="settings-section-title">⚙️ Device Control</div>
+    <div id="device-control">
+      <div class="setting-row">
+        <span class="setting-label">Device Actions:</span>
+        <span class="setting-value" style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-sm" onclick="rebootDevice()" style="background:var(--accent-amber);">🔄 Reboot Device</button>
+          <button class="btn btn-sm" onclick="shutdownDevice()" style="background:var(--accent-red);">⏻ Shutdown Device</button>
+          <button class="btn btn-sm" onclick="factoryResetDevice()" style="background:var(--accent-red);opacity:0.7;">⚠️ Factory Reset</button>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim); line-height:1.5;">
+          <strong>Reboot:</strong> Restarts the device (applies config changes)<br>
+          <strong>Shutdown:</strong> Powers off the device<br>
+          <strong>Factory Reset:</strong> ⚠️ Erases all settings and returns to defaults
+        </span>
+      </div>
+    </div>
+  </div>`;
+  
+  // Add Auto-Responder section
+  html += `<div class="settings-section" style="background: rgba(16, 185, 129, 0.1); border-left: 3px solid var(--accent-green);">
+    <div class="settings-section-title">🤖 Auto-Responder</div>
+    <div id="autoresponder-config">Loading...</div>
+  </div>`;
+  
+  // Add Message Filter section
+  html += `<div class="settings-section" style="background: rgba(251, 191, 36, 0.1); border-left: 3px solid var(--accent-amber);">
+    <div class="settings-section-title">🔇 Message Filter</div>
+    <div id="message-filter-config">Loading...</div>
+  </div>`;
+  
+  // Add MQTT Bridge Configuration section
+  html += `<div class="settings-section" style="background: rgba(99, 102, 241, 0.1); border-left: 3px solid var(--accent-purple);">
+    <div class="settings-section-title">🌉 MQTT Bridge Configuration</div>
+    <div id="mqtt-bridge-config">Loading...</div>
+  </div>`;
+
+  // LoRa Settings
+  if (config.localConfig?.lora) {
+    const lora = config.localConfig.lora;
+    
+    // Debug: log the actual field names
+    console.log('LoRa config fields:', Object.keys(lora));
+    console.log('Full LoRa config:', lora);
+    
+    const regionNames = {
+      0: 'Unset', 1: 'US', 2: 'EU_433', 3: 'EU_868', 4: 'CN', 5: 'JP', 6: 'ANZ', 
+      7: 'KR', 8: 'TW', 9: 'RU', 10: 'IN', 11: 'NZ_865', 12: 'TH', 13: 'UA_433', 14: 'UA_868', 15: 'MY_433', 16: 'MY_919', 17: 'SG_923', 18: 'LORA_24'
+    };
+    const modemPresets = {
+      0: 'Long Range - Fast', 
+      1: 'Long Range - Slow', 
+      2: 'Very Long Range - Slow', 
+      3: 'Medium Range - Slow', 
+      4: 'Medium Range - Fast', 
+      5: 'Short Range - Slow', 
+      6: 'Short Range - Fast', 
+      7: 'Long Range - Moderate'
+    };
+    
+    // Handle both snake_case and camelCase field names from protobuf
+    const region = lora.region ?? lora.Region;
+    
+    // Detect modem preset by matching bandwidth, coding rate, and spread factor
+    const bw = lora.bandwidth;
+    const cr = lora.codingRate;
+    const sf = lora.spreadFactor;
+    
+    let modemPresetName = 'Custom';
+    // Match against known preset combinations
+    if (bw === 250 && cr === 5 && sf === 11) modemPresetName = 'Long Range - Fast';
+    else if (bw === 125 && cr === 8 && sf === 12) modemPresetName = 'Long Range - Slow';
+    else if (bw === 62.5 && cr === 8 && sf === 12) modemPresetName = 'Very Long Range - Slow';
+    else if (bw === 250 && cr === 8 && sf === 10) modemPresetName = 'Medium Range - Slow';
+    else if (bw === 250 && cr === 5 && sf === 10) modemPresetName = 'Medium Range - Fast';
+    else if (bw === 250 && cr === 8 && sf === 7) modemPresetName = 'Short Range - Slow';
+    else if (bw === 250 && cr === 5 && sf === 7) modemPresetName = 'Short Range - Fast';
+    else if (bw === 250 && cr === 5 && sf === 12) modemPresetName = 'Long Range - Moderate';
+    
+    const hopLimit = lora.hopLimit ?? lora.hop_limit ?? lora.HopLimit ?? 3;
+    const txPower = lora.txPower ?? lora.tx_power ?? lora.TxPower ?? 0;
+    const txEnabled = lora.txEnabled ?? lora.tx_enabled ?? lora.TxEnabled ?? true;
+    const overrideFreq = lora.overrideFrequency ?? lora.override_frequency ?? lora.OverrideFrequency;
+    
+    html += `<div class="settings-section">
+      <div class="settings-section-title">📡 LoRa Radio</div>
+      <div class="setting-row"><span class="setting-label">Region</span><span class="setting-value">${regionNames[region] || region}</span></div>
+      <div class="setting-row"><span class="setting-label">Modem Preset</span><span class="setting-value">${modemPresetName}</span></div>
+      <div class="setting-row"><span class="setting-label">Hop Limit</span><span class="setting-value">${hopLimit} hops</span></div>
+      <div class="setting-row"><span class="setting-label">TX Power</span><span class="setting-value">${txPower} dBm</span></div>
+      <div class="setting-row"><span class="setting-label">TX Enabled</span><span class="setting-value ${txEnabled ? 'enabled' : 'disabled'}">${txEnabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Frequency Override</span><span class="setting-value">${overrideFreq ? (overrideFreq / 1000000).toFixed(3) + ' MHz' : 'Default'}</span></div>
+    </div>`;
+  }
+
+  // MQTT Settings
+  if (config.moduleConfig?.mqtt) {
+    const mqtt = config.moduleConfig.mqtt;
+    const encEnabled = mqtt.encryptionEnabled ?? mqtt.encryption_enabled ?? mqtt.EncryptionEnabled;
+    const jsonEnabled = mqtt.jsonEnabled ?? mqtt.json_enabled ?? mqtt.JsonEnabled;
+    const mapReporting = mqtt.mapReportingEnabled ?? mqtt.map_reporting_enabled ?? mqtt.MapReportingEnabled;
+    
+    html += `<div class="settings-section">
+      <div class="settings-section-title">☁️ MQTT</div>
+      <div class="setting-row"><span class="setting-label">Enabled</span><span class="setting-value ${mqtt.enabled ? 'enabled' : 'disabled'}">${mqtt.enabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Server</span><span class="setting-value">${mqtt.address || 'Not configured'}</span></div>
+      <div class="setting-row"><span class="setting-label">Username</span><span class="setting-value">${mqtt.username || 'None'}</span></div>
+      <div class="setting-row"><span class="setting-label">Encryption</span><span class="setting-value ${encEnabled ? 'enabled' : 'disabled'}">${encEnabled ? 'Enabled' : 'Disabled'}</span></div>
+      <div class="setting-row"><span class="setting-label">JSON Enabled</span><span class="setting-value ${jsonEnabled ? 'enabled' : 'disabled'}">${jsonEnabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Map Reporting</span><span class="setting-value ${mapReporting ? 'enabled' : 'disabled'}">${mapReporting ? 'Enabled' : 'Disabled'}</span></div>
+    </div>`;
+  }
+
+  // Device Settings
+  if (config.localConfig?.device) {
+    const device = config.localConfig.device;
+    
+    // Debug: log device config
+    console.log('Device config fields:', Object.keys(device));
+    console.log('Full Device config:', device);
+    
+    const roles = {0: 'Client', 1: 'Client Mute', 2: 'Router', 3: 'Router Client', 4: 'Repeater', 5: 'Tracker', 6: 'Sensor', 7: 'TAK', 8: 'Client Hidden', 9: 'Lost and Found', 10: 'TAK Tracker'};
+    
+    const role = device.role ?? device.Role;
+    const serialEnabled = device.serialEnabled ?? device.serial_enabled ?? device.SerialEnabled;
+    const rebroadcastMode = device.rebroadcastMode ?? device.rebroadcast_mode ?? device.RebroadcastMode;
+    const nodeInfoSecs = device.nodeInfoBroadcastSecs ?? device.node_info_broadcast_secs ?? device.NodeInfoBroadcastSecs ?? 10800;
+    
+    html += `<div class="settings-section">
+      <div class="settings-section-title">📱 Device</div>
+      <div class="setting-row"><span class="setting-label">Role</span><span class="setting-value">${roles[role] || role}</span></div>
+      <div class="setting-row"><span class="setting-label">Serial Enabled</span><span class="setting-value ${serialEnabled ? 'enabled' : 'disabled'}">${serialEnabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Rebroadcast Mode</span><span class="setting-value">${rebroadcastMode === 0 ? 'All' : rebroadcastMode === 1 ? 'All Skip Decoding' : rebroadcastMode === 2 ? 'Local Only' : 'Known Only'}</span></div>
+      <div class="setting-row"><span class="setting-label">Node Info Broadcast Secs</span><span class="setting-value">${nodeInfoSecs}s (${(nodeInfoSecs / 3600).toFixed(1)}h)</span></div>
+    </div>`;
+  }
+
+  // Position Settings
+  if (config.localConfig?.position) {
+    const pos = config.localConfig.position;
+    html += `<div class="settings-section">
+      <div class="settings-section-title">📍 Position</div>
+      <div class="setting-row"><span class="setting-label">GPS Enabled</span><span class="setting-value ${!pos.gps_disabled ? 'enabled' : 'disabled'}">${!pos.gps_disabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Fixed Position</span><span class="setting-value ${pos.fixed_position ? 'enabled' : 'disabled'}">${pos.fixed_position ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Broadcast Interval</span><span class="setting-value">${pos.position_broadcast_secs || 900}s (${((pos.position_broadcast_secs || 900) / 60).toFixed(0)}min)</span></div>
+      <div class="setting-row"><span class="setting-label">Smart Broadcast</span><span class="setting-value ${pos.position_broadcast_smart_enabled ? 'enabled' : 'disabled'}">${pos.position_broadcast_smart_enabled ? 'Enabled' : 'Disabled'}</span></div>
+    </div>`;
+  }
+
+  // Power Settings
+  if (config.localConfig?.power) {
+    const power = config.localConfig.power;
+    html += `<div class="settings-section">
+      <div class="settings-section-title">🔋 Power</div>
+      <div class="setting-row"><span class="setting-label">Power Saving</span><span class="setting-value ${power.is_power_saving ? 'enabled' : 'disabled'}">${power.is_power_saving ? 'Enabled' : 'Disabled'}</span></div>
+      <div class="setting-row"><span class="setting-label">Shutdown on Battery</span><span class="setting-value">${power.on_battery_shutdown_after_secs || 0}s ${power.on_battery_shutdown_after_secs ? '(' + (power.on_battery_shutdown_after_secs / 3600).toFixed(1) + 'h)' : '(Disabled)'}</span></div>
+      <div class="setting-row"><span class="setting-label">ADC Multiplier Override</span><span class="setting-value">${power.adc_multiplier_override || 'Default'}</span></div>
+      <div class="setting-row"><span class="setting-label">Wait Bluetooth Secs</span><span class="setting-value">${power.wait_bluetooth_secs || 60}s</span></div>
+    </div>`;
+  }
+
+  // Channels
+  if (config.channels && config.channels.length > 0) {
+    html += `<div class="settings-section">
+      <div class="settings-section-title">📻 Channels</div>`;
+    
+    config.channels.forEach(ch => {
+      // Handle role: can be string "1" or number 1 (0=DISABLED, 1=PRIMARY, 2=SECONDARY)
+      let roleClass = 'disabled';
+      let roleText = 'DISABLED';
+      if (ch.role === 1 || ch.role === "1" || (typeof ch.role === 'string' && ch.role.includes('PRIMARY'))) {
+        roleClass = 'primary';
+        roleText = 'PRIMARY';
+      } else if (ch.role === 2 || ch.role === "2" || (typeof ch.role === 'string' && ch.role.includes('SECONDARY'))) {
+        roleClass = 'secondary';
+        roleText = 'SECONDARY';
+      }
+      
+      const name = ch.settings?.name || `Channel ${ch.index}`;
+      const psk = ch.settings?.psk ? 'Encrypted' : 'Open';
+      
+      // Handle both snake_case and camelCase for uplink/downlink
+      const uplinkEnabled = ch.settings?.uplinkEnabled ?? ch.settings?.uplink_enabled ?? ch.settings?.UplinkEnabled ?? false;
+      const downlinkEnabled = ch.settings?.downlinkEnabled ?? ch.settings?.downlink_enabled ?? ch.settings?.DownlinkEnabled ?? false;
+      
+      html += `<div class="channel-card ${roleClass}">
+        <div class="channel-name">${name}</div>
+        <div class="setting-row"><span class="setting-label">Role</span><span class="setting-value">${roleText}</span></div>
+        <div class="setting-row"><span class="setting-label">Security</span><span class="setting-value">${psk}</span></div>
+        <div class="setting-row"><span class="setting-label">MQTT Uplink</span><span class="setting-value ${uplinkEnabled ? 'enabled' : 'disabled'}">${uplinkEnabled ? 'Yes' : 'No'}</span></div>
+        <div class="setting-row"><span class="setting-label">MQTT Downlink</span><span class="setting-value ${downlinkEnabled ? 'enabled' : 'disabled'}">${downlinkEnabled ? 'Yes' : 'No'}</span></div>
+      </div>`;
+    });
+    
+    html += `</div>`;
+  }
+
+  // Store & Forward
+  if (config.moduleConfig?.storeForward) {
+    const sf = config.moduleConfig.storeForward;
+    html += `<div class="settings-section">
+      <div class="settings-section-title">💾 Store & Forward</div>
+      <div class="setting-row"><span class="setting-label">Enabled</span><span class="setting-value ${sf.enabled ? 'enabled' : 'disabled'}">${sf.enabled ? 'Yes' : 'No'}</span></div>
+      <div class="setting-row"><span class="setting-label">Heartbeat</span><span class="setting-value ${sf.heartbeat ? 'enabled' : 'disabled'}">${sf.heartbeat ? 'Enabled' : 'Disabled'}</span></div>
+      <div class="setting-row"><span class="setting-label">Records</span><span class="setting-value">${sf.records || 0}</span></div>
+      <div class="setting-row"><span class="setting-label">History Return Max</span><span class="setting-value">${sf.history_return_max || 0}</span></div>
+    </div>`;
+  }
+
+  // Telemetry
+  if (config.moduleConfig?.telemetry) {
+    const telem = config.moduleConfig.telemetry;
+    html += `<div class="settings-section">
+      <div class="settings-section-title">📊 Telemetry</div>
+      <div class="setting-row"><span class="setting-label">Device Update Interval</span><span class="setting-value">${telem.device_update_interval || 900}s (${((telem.device_update_interval || 900) / 60).toFixed(0)}min)</span></div>
+      <div class="setting-row"><span class="setting-label">Environment Update Interval</span><span class="setting-value">${telem.environment_update_interval || 900}s (${((telem.environment_update_interval || 900) / 60).toFixed(0)}min)</span></div>
+      <div class="setting-row"><span class="setting-label">Environment Screen Enabled</span><span class="setting-value ${telem.environment_screen_enabled ? 'enabled' : 'disabled'}">${telem.environment_screen_enabled ? 'Yes' : 'No'}</span></div>
+    </div>`;
+  }
+
+  el.innerHTML = html || '<div class="empty-state" style="padding:40px;"><p>No configuration data available</p></div>';
+  
+  // Load MQTT health details, auto-responder, message filter, and bridge config after rendering
+  loadMqttHealthDetails();
+  loadAutoresponderConfig();
+  loadMessageFilterConfig();
+  loadMqttBridgeConfig();
+}
+
+async function loadMqttHealthDetails() {
+  try {
+    const res = await fetch('/api/mqtt/health');
+    const data = await res.json();
+    const el = document.getElementById('mqtt-health-details');
+    
+    if (!el) return;
+    
+    const formatTime = (seconds) => {
+      if (seconds === null) return 'Never';
+      if (seconds < 60) return 'Just now';
+      const mins = Math.floor(seconds / 60);
+      if (mins < 60) return `${mins}m ago`;
+      const hours = Math.floor(mins / 60);
+      return `${hours}h ${mins % 60}m ago`;
+    };
+    
+    const formatUptime = (seconds) => {
+      if (seconds < 60) return `${Math.floor(seconds)}s`;
+      const mins = Math.floor(seconds / 60);
+      if (mins < 60) return `${mins}m`;
+      const hours = Math.floor(mins / 60);
+      return `${hours}h ${mins % 60}m`;
+    };
+    
+    const healthIcons = {
+      'healthy': '🟢',
+      'slow': '🟡',
+      'stalled': '🔴',
+      'unknown': '⚪'
+    };
+    
+    const healthColors = {
+      'healthy': 'var(--accent-green)',
+      'slow': 'var(--accent-amber)',
+      'stalled': 'var(--accent-red)',
+      'unknown': 'var(--text-dim)'
+    };
+    
+    el.innerHTML = `
+      <div class="setting-row">
+        <span class="setting-label">Status:</span>
+        <span class="setting-value" style="color:${healthColors[data.health_status]};">
+          ${healthIcons[data.health_status]} ${data.health_message}
+        </span>
+      </div>
+      <div class="setting-row" style="background:rgba(99,102,241,0.15);padding:12px;border-radius:4px;margin-bottom:8px;">
+        <span class="setting-label" style="font-size:13px;font-weight:600;">MQTT Topic Root:</span>
+        <span class="setting-value" style="font-family:var(--mono);color:var(--accent-cyan);font-size:13px;">
+          ${data.mqtt_root || 'unknown'}
+          <button class="btn btn-sm" onclick="openMqttConfigModal()" style="margin-left:8px;background:var(--accent-purple);font-size:11px;padding:4px 8px;">Change</button>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Last MQTT Message:</span>
+        <span class="setting-value">${formatTime(data.last_mqtt_ago)}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Last RF Message:</span>
+        <span class="setting-value">${formatTime(data.last_rf_ago)}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">MQTT Messages Received:</span>
+        <span class="setting-value">${data.mqtt_count}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">RF Messages Received:</span>
+        <span class="setting-value">${data.rf_count}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Broadcasts Sent (via MQTT):</span>
+        <span class="setting-value">${data.mqtt_sent}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Connection Uptime:</span>
+        <span class="setting-value">${formatUptime(data.uptime)}</span>
+      </div>
+      <div class="setting-row" style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim);">
+          Health Indicators: 🟢 Active (<5m) | 🟡 Quiet (<15m) | 🔴 Stalled (>15m)
+        </span>
+      </div>
+    `;
+  } catch (e) {
+    const el = document.getElementById('mqtt-health-details');
+    if (el) el.innerHTML = '<div class="setting-row"><span class="setting-value" style="color:var(--accent-red);">Error loading health data</span></div>';
+  }
+}
+
+async function loadAutoresponderConfig() {
+  try {
+    const res = await fetch('/api/autoresponder');
+    const data = await res.json();
+    const el = document.getElementById('autoresponder-config');
+    
+    if (!el) return;
+    
+    const enabled = data.enabled || false;
+    const rules = data.rules || [];
+    
+    let html = `
+      <div class="setting-row">
+        <span class="setting-label">Auto-Responder Status:</span>
+        <span class="setting-value">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autoresponder-enabled" ${enabled ? 'checked' : ''} onchange="toggleAutoresponder()">
+            Enable Auto-Responder
+          </label>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim); line-height:1.5;">
+          Automatically reply to incoming messages based on rules. Useful for status checks and testing.
+        </span>
+      </div>
+    `;
+    
+    if (enabled && rules.length > 0) {
+      html += `<div class="setting-row" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <span class="setting-label">Active Rules:</span>
+      </div>`;
+      
+      rules.forEach((rule, idx) => {
+        const ruleEnabled = rule.enabled !== false;
+        const triggerTypeLabel = {
+          'exact': 'Exact match',
+          'contains': 'Contains',
+          'startswith': 'Starts with'
+        }[rule.triggerType] || rule.triggerType;
+        
+        const messageTypeLabel = {
+          'broadcast': 'Broadcast only',
+          'direct': 'Direct only',
+          'both': 'Both'
+        }[rule.messageType] || rule.messageType;
+        
+        html += `
+          <div class="setting-row" style="background:rgba(255,255,255,0.02);padding:12px;border-radius:4px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:start;">
+              <div style="flex:1;">
+                <div style="font-family:var(--mono);font-size:13px;color:var(--accent-cyan);margin-bottom:4px;">
+                  ${ruleEnabled ? '✓' : '✗'} "${rule.trigger}" → "${rule.response}"
+                </div>
+                <div style="font-size:11px;color:var(--text-dim);">
+                  ${triggerTypeLabel} • ${messageTypeLabel} • Cooldown: ${rule.cooldownSeconds}s
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+    
+    html += `
+      <div class="setting-row" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <span class="setting-label">Available Variables:</span>
+        <span class="setting-value" style="font-size:11px; color:var(--text-dim); line-height:1.6;">
+          Use these in your responses:<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{sender_name}</code> - Sender's full name<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{sender_short}</code> - Sender's short name<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{sender_id}</code> - Sender's node ID<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{my_name}</code> - Your node's name<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{my_id}</code> - Your node's ID<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{message}</code> - Original message text<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{message_type}</code> - "broadcast" or "direct"
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim);">
+          To edit rules, modify <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">autoresponder.json</code> and the dashboard will auto-reload.
+        </span>
+      </div>
+    `;
+    
+    el.innerHTML = html;
+    
+  } catch (e) {
+    const el = document.getElementById('autoresponder-config');
+    if (el) el.innerHTML = '<div class="setting-row"><span class="setting-value" style="color:var(--accent-red);">Error loading auto-responder configuration</span></div>';
+  }
+}
+
+async function toggleAutoresponder() {
+  const enabled = document.getElementById('autoresponder-enabled').checked;
+  
+  try {
+    const res = await fetch('/api/autoresponder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast(enabled ? 'Auto-responder enabled' : 'Auto-responder disabled', 'success');
+      loadAutoresponderConfig();
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ── Device Control ─────────────────────────────────────────────────────
+async function rebootDevice() {
+  if (!confirm('Reboot device? This will restart the device and apply any pending configuration changes.')) {
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/device/reboot', {
+      method: 'POST'
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast('Device is rebooting...', 'success');
+    } else {
+      toast(`Error: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function shutdownDevice() {
+  if (!confirm('Shutdown device? This will power off the device completely.')) {
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/device/shutdown', {
+      method: 'POST'
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast('Device is shutting down...', 'success');
+    } else {
+      toast(`Error: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function factoryResetDevice() {
+  if (!confirm('⚠️ FACTORY RESET ⚠️\n\nThis will ERASE ALL SETTINGS and return the device to factory defaults.\n\nAre you ABSOLUTELY SURE?')) {
+    return;
+  }
+  
+  if (!confirm('This action CANNOT BE UNDONE. All channels, settings, and configurations will be lost.\n\nProceed with factory reset?')) {
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/device/factory-reset', {
+      method: 'POST'
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast('Device is performing factory reset...', 'error');
+    } else {
+      toast(`Error: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function loadMessageFilterConfig() {
+  try {
+    const res = await fetch('/api/message-filter');
+    const data = await res.json();
+    const el = document.getElementById('message-filter-config');
+    
+    if (!el) return;
+    
+    const enabled = data.enabled || false;
+    const filterMode = data.filter_mode || 'allowlist';
+    const nodeIds = data.node_ids || [];
+    const portnums = data.portnums || [];
+    
+    let html = `
+      <div class="setting-row">
+        <span class="setting-label">Filter Status:</span>
+        <span class="setting-value">
+          <label class="checkbox-label">
+            <input type="checkbox" id="filter-enabled" ${enabled ? 'checked' : ''} onchange="toggleMessageFilter()">
+            Enable Message Filtering
+          </label>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim); line-height:1.5;">
+          Reduce noise from public MQTT by filtering messages. Only affects what you see in the dashboard - doesn't change device behavior.
+        </span>
+      </div>
+    `;
+    
+    if (enabled) {
+      html += `
+        <div class="setting-row" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+          <span class="setting-label">Filter Mode:</span>
+          <span class="setting-value">
+            <select id="filter-mode" onchange="updateFilterMode()" style="background:var(--bg-primary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:12px;">
+              <option value="allowlist" ${filterMode === 'allowlist' ? 'selected' : ''}>Allowlist (only show these)</option>
+              <option value="blocklist" ${filterMode === 'blocklist' ? 'selected' : ''}>Blocklist (hide these)</option>
+            </select>
+          </span>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">Node IDs:</span>
+          <span class="setting-value">
+            <input type="text" id="filter-nodes" value="${nodeIds.join(', ')}" placeholder="!02ed4dfc, !040944e0" style="width:100%;background:var(--bg-primary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:12px;">
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated node IDs (e.g., !02ed4dfc)</div>
+          </span>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">Message Types:</span>
+          <span class="setting-value">
+            <input type="text" id="filter-portnums" value="${portnums.join(', ')}" placeholder="TEXT_MESSAGE_APP, POSITION_APP" style="width:100%;background:var(--bg-primary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:12px;">
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated types: TEXT_MESSAGE_APP, POSITION_APP, TELEMETRY_APP, etc.</div>
+          </span>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label"></span>
+          <span class="setting-value">
+            <button class="btn btn-sm" onclick="saveMessageFilter()" style="background:var(--accent-green);">💾 Save Filter</button>
+          </span>
+        </div>
+      `;
+    }
+    
+    el.innerHTML = html;
+    
+  } catch (e) {
+    const el = document.getElementById('message-filter-config');
+    if (el) el.innerHTML = '<div class="setting-row"><span class="setting-value" style="color:var(--accent-red);">Error loading filter configuration</span></div>';
+  }
+}
+
+async function toggleMessageFilter() {
+  const enabled = document.getElementById('filter-enabled').checked;
+  
+  try {
+    const res = await fetch('/api/message-filter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast(enabled ? 'Message filter enabled' : 'Message filter disabled', 'success');
+      loadMessageFilterConfig();
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function updateFilterMode() {
+  await saveMessageFilter();
+}
+
+async function saveMessageFilter() {
+  const enabled = document.getElementById('filter-enabled')?.checked || false;
+  const filterMode = document.getElementById('filter-mode')?.value || 'allowlist';
+  const nodesInput = document.getElementById('filter-nodes')?.value || '';
+  const portnumsInput = document.getElementById('filter-portnums')?.value || '';
+  
+  const nodeIds = nodesInput.split(',').map(s => s.trim()).filter(s => s);
+  const portnums = portnumsInput.split(',').map(s => s.trim()).filter(s => s);
+  
+  try {
+    const res = await fetch('/api/message-filter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled,
+        filter_mode: filterMode,
+        node_ids: nodeIds,
+        portnums: portnums
+      })
+    });
+    const data = await res.json();
+    
+    if (data.status === 'success') {
+      toast('Message filter saved', 'success');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function loadMqttBridgeConfig() {
+  try {
+    const res = await fetch('/api/mqtt/bridge/status');
+    const data = await res.json();
+    const el = document.getElementById('mqtt-bridge-config');
+    
+    if (!el) return;
+    
+    // Only show if bridge is actually running
+    if (!data.running) {
+      el.innerHTML = `
+        <div class="setting-row">
+          <span class="setting-label">Status:</span>
+          <span class="setting-value" style="color:var(--text-dim);">Not Running</span>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" style="font-size:11px; color:var(--text-dim); line-height:1.5;">
+            The MQTT bridge is not currently running. See <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">mqtt-bridge/README.md</code> for setup instructions.
+          </span>
+        </div>
+      `;
+      return;
+    }
+    
+    // Bridge is running - show full details
+    const broker = data.config?.broker || {};
+    const bridge = data.config?.bridge || {};
+    
+    let configHtml = `
+      <div class="setting-row">
+        <span class="setting-label">Bridge Status:</span>
+        <span class="setting-value enabled">✓ Running</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Local Broker:</span>
+        <span class="setting-value">${broker.host || 'localhost'}:${broker.port || 1883}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Username:</span>
+        <span class="setting-value"><code style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:3px;">${broker.username || 'N/A'}</code></span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Bridging To:</span>
+        <span class="setting-value">${bridge.remote_host || 'mqtt.meshtastic.org'}:${bridge.remote_port || 1883}</span>
+      </div>
+    `;
+    
+    if (bridge.topics && bridge.topics.length > 0) {
+      configHtml += `
+        <div class="setting-row">
+          <span class="setting-label">Synced Topics:</span>
+          <span class="setting-value">${bridge.topics.join(', ')}</span>
+        </div>
+      `;
+    }
+    
+    el.innerHTML = configHtml;
+    
+  } catch (e) {
+    const el = document.getElementById('mqtt-bridge-config');
+    if (el) el.innerHTML = '<div class="setting-row"><span class="setting-value" style="color:var(--text-dim);">Bridge not available</span></div>';
+  }
+}
+
+async function openMqttConfigModal() {
+  const modal = document.getElementById('mqtt-config-modal');
+  const statusEl = document.getElementById('mqtt-config-status');
+  statusEl.innerHTML = '<span style="color:var(--text-dim);">Loading current configuration...</span>';
+  
+  modal.classList.add('active');
+  
+  // Load current MQTT config from device
+  try {
+    const res = await fetch('/api/device/mqtt/config');
+    const data = await res.json();
+    
+    if (data.error) {
+      statusEl.innerHTML = `<span style="color:var(--accent-red);">Error: ${data.error}</span>`;
+      return;
+    }
+    
+    // Populate form with current values
+    document.getElementById('mqtt-enabled').checked = data.enabled || false;
+    document.getElementById('mqtt-address').value = data.address || '';
+    document.getElementById('mqtt-root').value = data.root || 'msh/US';
+    document.getElementById('mqtt-username').value = data.username || '';
+    document.getElementById('mqtt-password').value = data.password || '';
+    document.getElementById('mqtt-tls').checked = data.tlsEnabled || false;
+    
+    statusEl.innerHTML = '';
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--accent-red);">Error loading config: ${e.message}</span>`;
+  }
+}
+
+function closeMqttConfigModal() {
+  document.getElementById('mqtt-config-modal').classList.remove('active');
+}
+
+async function saveMqttConfig() {
+  const statusEl = document.getElementById('mqtt-config-status');
+  statusEl.innerHTML = '<span style="color:var(--accent-amber);">⏳ Saving configuration...</span>';
+  
+  const config = {
+    enabled: document.getElementById('mqtt-enabled').checked,
+    address: document.getElementById('mqtt-address').value.trim(),
+    root: document.getElementById('mqtt-root').value.trim(),
+    username: document.getElementById('mqtt-username').value.trim(),
+    password: document.getElementById('mqtt-password').value,
+    tlsEnabled: document.getElementById('mqtt-tls').checked
+  };
+  
+  try {
+    const res = await fetch('/api/device/mqtt/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    const data = await res.json();
+    
+    if (data.error) {
+      statusEl.innerHTML = `<span style="color:var(--accent-red);">✗ Error: ${data.error}</span>`;
+      return;
+    }
+    
+    statusEl.innerHTML = '<span style="color:var(--accent-green);">✓ Configuration saved! Device is rebooting...</span>';
+    toast('MQTT configuration updated. Device will reboot.', 'success');
+    
+    setTimeout(() => {
+      closeMqttConfigModal();
+    }, 2000);
+    
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--accent-red);">✗ Error: ${e.message}</span>`;
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// Close modal on overlay click
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'mqtt-config-modal') {
+    closeMqttConfigModal();
+  }
+});
+
+// ── MQTT Test ──────────────────────────────────────────────────────────
+let mqttTestInProgress = false;
+let lastMqttTestTime = 0;
+
+async function testMqttConnection() {
+  const now = Date.now();
+  const statusEl = document.getElementById('mqtt-test-status');
+  
+  // Prevent spam - require 10 seconds between tests
+  if (mqttTestInProgress || (now - lastMqttTestTime) < 10000) {
+    toast('Please wait 10 seconds between MQTT tests', 'warning');
+    return;
+  }
+  
+  mqttTestInProgress = true;
+  lastMqttTestTime = now;
+  statusEl.innerHTML = '<span style="color:var(--accent-amber);">⏳ Sending test message...</span>';
+  
+  const testMsg = `MQTT Test from ${new Date().toLocaleTimeString()}`;
+  
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: testMsg, dest: null })
+    });
+    const data = await res.json();
+    
+    if (data.error) {
+      statusEl.innerHTML = '<span style="color:var(--accent-red);">✗ Failed to send</span>';
+      toast(data.error, 'error');
+      mqttTestInProgress = false;
+      return;
+    }
+    
+    statusEl.innerHTML = '<span style="color:var(--accent-green);">✓ Test message sent! Check Messages tab for responses.</span>';
+    toast('MQTT test message sent. Watch for responses in Messages tab.', 'success');
+    
+    // Auto-clear status after 10 seconds
+    setTimeout(() => { 
+      statusEl.innerHTML = ''; 
+      mqttTestInProgress = false;
+    }, 10000);
+  } catch (e) {
+    statusEl.innerHTML = '<span style="color:var(--accent-red);">✗ Error</span>';
+    toast(`Error: ${e.message}`, 'error');
+    mqttTestInProgress = false;
+  }
+}
+
+// ── Tab Switching ──────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(`tab-${tab}`).classList.add('active');
+
+  if (tab === 'messages') refreshMessages();
+  if (tab === 'traceroute') refreshTraceroutes();
+  if (tab === 'packets') refreshPackets();
+  if (tab === 'device') refreshDeviceSettings();
+}
+
+// ── Keyboard shortcuts ──────────────────────────────────────────────────
+document.getElementById('send-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendMessage();
+});
+
+document.getElementById('msg-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendMessageFromTab();
+});
+
+document.getElementById('tr-dest').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendTraceroute();
+});
+
+// Prevent Ctrl+R from reloading when connected
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+    if (connected) {
+      e.preventDefault();
+      toast('Reload disabled while connected. Disconnect first to reload.', 'info');
+    }
+  }
+});
+</script>
+
+<!-- MQTT Configuration Modal -->
+<div id="mqtt-config-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔧 Configure Device MQTT</h3>
+      <button class="modal-close" onclick="closeMqttConfigModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="mqtt-enabled">
+          Enable MQTT
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="mqtt-address">MQTT Server Address</label>
+        <input type="text" id="mqtt-address" placeholder="mqtt.meshtastic.org or 192.168.1.x">
+        <div class="form-help">Enter hostname or IP address of MQTT broker</div>
+      </div>
+      <div class="form-group">
+        <label for="mqtt-root">MQTT Topic Root</label>
+        <input type="text" id="mqtt-root" placeholder="msh/US/2/e/YourChannel">
+        <div class="form-help">
+          <strong>This controls what topics you subscribe to!</strong><br>
+          Examples:<br>
+          • <code>msh/US</code> - All US traffic (⚠️ LOTS of data)<br>
+          • <code>msh/US/2/e/LongFast</code> - Specific encrypted channel<br>
+          • <code>msh/2/e/!YOUR_NODE_ID</code> - Only your node's messages<br>
+          More specific = less traffic
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="mqtt-username">Username</label>
+        <input type="text" id="mqtt-username" placeholder="meshtastic">
+        <div class="form-help">Leave empty for anonymous connection</div>
+      </div>
+      <div class="form-group">
+        <label for="mqtt-password">Password</label>
+        <input type="password" id="mqtt-password" placeholder="••••••••">
+        <div class="form-help">Leave empty if no password required</div>
+      </div>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="mqtt-tls">
+          Enable TLS/SSL Encryption
+        </label>
+        <div class="form-help">Enable for secure connections (port 8883)</div>
+      </div>
+      <div id="mqtt-config-status" style="margin-top: 12px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeMqttConfigModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMqttConfig()" style="background:var(--accent-green);">Save & Apply</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

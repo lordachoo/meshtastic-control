@@ -1,0 +1,32 @@
+{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "ping",
+      "enabled": true,
+      "trigger": "ping",
+      "triggerType": "exact",
+      "response": "pong from {sender_short} ({sender_name} / {sender_id})",
+      "messageType": "both",
+      "cooldownSeconds": 60
+    },
+    {
+      "id": "test",
+      "enabled": true,
+      "trigger": "test",
+      "triggerType": "contains",
+      "response": "test received: {sender_short} ({sender_name} / {sender_id})",
+      "messageType": "broadcast",
+      "cooldownSeconds": 300
+    }
+  ],
+  "available_variables": {
+    "{sender_name}": "Full name of the sender (e.g., 'John Doe')",
+    "{sender_short}": "Short name of the sender (e.g., 'JD')",
+    "{sender_id}": "Node ID of the sender (e.g., '!02ed4dfc')",
+    "{my_name}": "Your node's full name",
+    "{my_id}": "Your node's ID",
+    "{message}": "The original message text",
+    "{message_type}": "Either 'broadcast' or 'direct'"
+  }
+}

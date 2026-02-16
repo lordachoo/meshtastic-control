@@ -1,0 +1,23 @@
+{
+  "broker": {
+    "host": "localhost",
+    "port": 1883,
+    "username": "meshtastic",
+    "password": "meshtastic123"
+  },
+  "bridge": {
+    "enabled": true,
+    "remote_host": "mqtt.meshtastic.org",
+    "remote_port": 1883,
+    "topics": [
+      "msh/2/e/!YOUR_NODE_ID/#"
+    ],
+    "topic_examples": {
+      "all_us": "msh/US/#",
+      "all_encrypted": "msh/2/e/#",
+      "specific_node": "msh/2/e/!YOUR_NODE_ID/#",
+      "specific_channel": "msh/2/c/LongFast/#",
+      "json_only": "msh/2/json/#"
+    }
+  }
+}
