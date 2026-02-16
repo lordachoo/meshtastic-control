@@ -16,7 +16,16 @@
       "trigger": "test",
       "triggerType": "contains",
       "response": "test received: {sender_short} ({sender_name} / {sender_id})",
-      "messageType": "broadcast",
+      "messageType": "both",
+      "cooldownSeconds": 300
+    },
+    {
+      "id": "testing",
+      "enabled": true,
+      "trigger": "testing",
+      "triggerType": "contains",
+      "response": "test received: {sender_short} ({sender_name} / {sender_id})",
+      "messageType": "both",
       "cooldownSeconds": 300
     }
   ],

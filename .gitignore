@@ -32,6 +32,11 @@ PIPFILE.lock
 *.spec
 
 # Unit test / coverage reports
+# Auto-responder config
+autoresponder.json
+
+# Beacon config
+beacon.json
 htmlcov/
 .tox/
 .nox/

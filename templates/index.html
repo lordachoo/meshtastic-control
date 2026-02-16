@@ -837,7 +837,30 @@ body::after {
 .pkt-entry .pkt-to { color: var(--text-secondary); }
 .pkt-entry .pkt-port { color: var(--accent-amber); font-size: 10px; }
 .pkt-entry .pkt-snr { color: var(--text-dim); }
-.pkt-entry .pkt-text { color: var(--accent-green); overflow: hidden; text-overflow: ellipsis; }
+.pkt-entry .pkt-text { 
+  color: var(--accent-green); 
+  overflow: hidden; 
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-reply {
+  background: var(--accent-blue);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.btn-reply:hover {
+  background: var(--accent-blue-hover, #0066cc);
+}
 
 /* ── Send Message ──────────────────────────────────────────────── */
 .send-section {
@@ -959,8 +982,12 @@ body::after {
   </div>
   <div class="connection-bar">
     <div class="status-dot" id="status-dot"></div>
+    <select id="saved-connections" onchange="loadSavedConnection()" style="width:200px;padding:6px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;margin-right:8px;">
+      <option value="">Saved Connections...</option>
+    </select>
     <input type="text" id="host-input" placeholder="192.168.1.134" value="192.168.1.134">
     <input type="text" id="port-input" placeholder="4403" value="4403" style="width: 70px;">
+    <button class="btn btn-sm" onclick="saveConnection()" title="Save this connection" style="margin-right:4px;">💾</button>
     <button class="btn btn-primary" id="connect-btn" onclick="toggleConnect()">CONNECT</button>
   </div>
 </div>
@@ -1190,6 +1217,79 @@ function toast(msg, type = 'info') {
   el.textContent = msg;
   container.appendChild(el);
   setTimeout(() => el.remove(), 4000);
+}
+
+// ── Connection History ─────────────────────────────────────────────────
+function loadConnectionHistory() {
+  try {
+    const history = JSON.parse(localStorage.getItem('meshtastic_connections') || '[]');
+    const select = document.getElementById('saved-connections');
+    
+    // Clear existing options except first
+    select.innerHTML = '<option value="">Saved Connections...</option>';
+    
+    // Add saved connections
+    history.forEach((conn, idx) => {
+      const option = document.createElement('option');
+      option.value = idx;
+      option.textContent = `${conn.name || conn.host}:${conn.port}`;
+      select.appendChild(option);
+    });
+  } catch (e) {
+    console.error('Error loading connection history:', e);
+  }
+}
+
+function saveConnection() {
+  const host = document.getElementById('host-input').value.trim();
+  const port = document.getElementById('port-input').value.trim();
+  
+  if (!host || !port) {
+    toast('Enter host and port first', 'error');
+    return;
+  }
+  
+  const name = prompt(`Save connection as:\n${host}:${port}\n\nEnter a name (optional):`, host);
+  if (name === null) return; // Cancelled
+  
+  try {
+    const history = JSON.parse(localStorage.getItem('meshtastic_connections') || '[]');
+    
+    // Check if already exists
+    const exists = history.findIndex(c => c.host === host && c.port === port);
+    if (exists >= 0) {
+      history[exists].name = name || host;
+      toast('Connection updated', 'success');
+    } else {
+      history.push({ host, port, name: name || host, saved: new Date().toISOString() });
+      toast('Connection saved', 'success');
+    }
+    
+    localStorage.setItem('meshtastic_connections', JSON.stringify(history));
+    loadConnectionHistory();
+  } catch (e) {
+    toast(`Error saving: ${e.message}`, 'error');
+  }
+}
+
+function loadSavedConnection() {
+  const select = document.getElementById('saved-connections');
+  const idx = select.value;
+  
+  if (!idx) return;
+  
+  try {
+    const history = JSON.parse(localStorage.getItem('meshtastic_connections') || '[]');
+    const conn = history[parseInt(idx)];
+    
+    if (conn) {
+      document.getElementById('host-input').value = conn.host;
+      document.getElementById('port-input').value = conn.port;
+      toast(`Loaded ${conn.name || conn.host}`, 'info');
+    }
+  } catch (e) {
+    toast(`Error loading: ${e.message}`, 'error');
+  }
 }
 
 // ── Connection ─────────────────────────────────────────────────────────
@@ -1648,8 +1748,9 @@ async function refreshMessages() {
       const sourceBadge = isViaMqtt ? '<span class="badge badge-mqtt" style="margin-left:6px;font-size:9px;">MQTT</span>' : 
                           !isOutgoing ? '<span class="badge badge-rf" style="margin-left:6px;font-size:9px;">RF</span>' : '';
       
-      // Add reply button for incoming direct messages only (not broadcasts, not outgoing)
-      const replyBtn = (!isBroadcast && !isOutgoing) ? `<button class="btn btn-sm" onclick="replyToMessage('${msg.from}')" style="margin-left:8px;padding:2px 6px;font-size:10px;">REPLY</button>` : '';
+      // Add reply button for all incoming messages (including broadcasts)
+      const showReply = !isOutgoing && msg.from && msg.from !== '?';
+      const replyBtn = showReply ? `<button class="btn btn-sm" onclick="replyToMessage('${msg.from}', event)" style="margin-left:8px;padding:2px 6px;font-size:10px;">REPLY</button>` : '';
       
       // For outgoing messages, show "You" as sender
       const displayFrom = isOutgoing ? 'You' : fromName;
@@ -1748,13 +1849,20 @@ async function refreshPackets() {
     const html = packets.map(p => {
       const time = new Date(p.time).toLocaleTimeString();
       const port = (p.portnum || 'UNKNOWN').replace('_APP', '');
+      const isTextMsg = p.portnum === 'TEXT_MESSAGE_APP' && p.text;
+      const isIncoming = !p.outgoing;
+      const showReply = isTextMsg && isIncoming && p.from && p.from !== '?';
+      
       return `<div class="pkt-entry">
         <div class="pkt-time">${time}</div>
         <div class="pkt-from">${p.from || '?'}</div>
         <div class="pkt-to">${p.to || '?'}</div>
         <div class="pkt-port">${port}</div>
         <div class="pkt-snr">${p.snr != null ? p.snr + 'dB' : ''}</div>
-        <div class="pkt-text">${p.text || ''}</div>
+        <div class="pkt-text">
+          ${p.text || ''}
+          ${showReply ? `<button class="btn-reply" onclick="replyToMessage('${p.from}', event)" title="Reply to ${p.from}">↩</button>` : ''}
+        </div>
       </div>`;
     }).join('');
 
@@ -1771,6 +1879,25 @@ function clearPackets() {
   document.getElementById('packet-list').innerHTML =
     '<div class="empty-state" style="padding:40px;"><p>Cleared</p></div>';
   lastPacketTime = null;
+}
+
+function replyToMessage(nodeId, event) {
+  if (event) event.stopPropagation();
+  
+  // Check which tab is active and populate the correct fields
+  const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+  
+  if (activeTab === 'messages') {
+    // Messages tab uses msg-dest and msg-text
+    document.getElementById('msg-dest').value = nodeId;
+    document.getElementById('msg-text').focus();
+  } else {
+    // Packet Log tab uses send-dest and send-text
+    document.getElementById('send-dest').value = nodeId;
+    document.getElementById('send-text').focus();
+  }
+  
+  toast(`Replying to ${nodeId}`, 'info');
 }
 
 // ── Send Message ───────────────────────────────────────────────────────
@@ -1901,6 +2028,12 @@ function renderDeviceSettings(config) {
   html += `<div class="settings-section" style="background: rgba(16, 185, 129, 0.1); border-left: 3px solid var(--accent-green);">
     <div class="settings-section-title">🤖 Auto-Responder</div>
     <div id="autoresponder-config">Loading...</div>
+  </div>`;
+  
+  // Add Beacon section
+  html += `<div class="settings-section" style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid var(--accent-blue);">
+    <div class="settings-section-title">📡 Beacon</div>
+    <div id="beacon-config">Loading...</div>
   </div>`;
   
   // Add Message Filter section
@@ -2100,9 +2233,10 @@ function renderDeviceSettings(config) {
 
   el.innerHTML = html || '<div class="empty-state" style="padding:40px;"><p>No configuration data available</p></div>';
   
-  // Load MQTT health details, auto-responder, message filter, and bridge config after rendering
+  // Load MQTT health details, auto-responder, beacon, message filter, and bridge config after rendering
   loadMqttHealthDetails();
   loadAutoresponderConfig();
+  loadBeaconConfig();
   loadMessageFilterConfig();
   loadMqttBridgeConfig();
 }
@@ -2303,6 +2437,171 @@ async function toggleAutoresponder() {
     if (data.status === 'success') {
       toast(enabled ? 'Auto-responder enabled' : 'Auto-responder disabled', 'success');
       loadAutoresponderConfig();
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ── Beacon Configuration ────────────────────────────────────────────────
+async function loadBeaconConfig() {
+  try {
+    const res = await fetch('/api/beacon');
+    const data = await res.json();
+    const el = document.getElementById('beacon-config');
+    
+    if (!el) return;
+    
+    const intervalOptions = [
+      { value: 5, label: '5 minutes' },
+      { value: 15, label: '15 minutes' },
+      { value: 30, label: '30 minutes' },
+      { value: 60, label: '1 hour' },
+      { value: 120, label: '2 hours' },
+      { value: 300, label: '5 hours' },
+      { value: 720, label: '12 hours' },
+      { value: 1440, label: '24 hours' }
+    ];
+    
+    const intervalSelect = intervalOptions.map(opt => 
+      `<option value="${opt.value}" ${data.interval_minutes === opt.value ? 'selected' : ''}>${opt.label}</option>`
+    ).join('');
+    
+    const variables = data.available_variables || {};
+    const varList = Object.entries(variables).map(([key, desc]) => 
+      `<code>${key}</code> - ${desc}`
+    ).join('<br>');
+    
+    let html = `
+      <div class="setting-row">
+        <span class="setting-label">Beacon Status</span>
+        <span class="setting-value">
+          <label class="toggle-switch">
+            <input type="checkbox" id="beacon-enabled" ${data.enabled ? 'checked' : ''} onchange="toggleBeacon()">
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="margin-left:8px;">${data.enabled ? 'ENABLED' : 'DISABLED'}</span>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Broadcast Interval</span>
+        <span class="setting-value">
+          <select id="beacon-interval" onchange="updateBeaconConfig()" style="padding:4px 8px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;">
+            ${intervalSelect}
+          </select>
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Message Template</span>
+        <span class="setting-value">
+          <input type="text" id="beacon-template" value="${data.message_template || ''}" 
+                 placeholder="Beacon from {my_name} | Battery: {battery}%"
+                 onchange="updateBeaconConfig()"
+                 style="width:100%;max-width:500px;padding:6px 10px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;">
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Channel</span>
+        <span class="setting-value">
+          <input type="number" id="beacon-channel" value="${data.channel || 0}" min="0" max="7"
+                 onchange="updateBeaconConfig()"
+                 style="width:80px;padding:6px 10px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;">
+        </span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Actions</span>
+        <span class="setting-value">
+          <button class="btn btn-sm" onclick="testBeacon()" style="margin-right:8px;">TEST NOW</button>
+          <button class="btn btn-sm" onclick="saveBeaconConfig()">SAVE</button>
+        </span>
+      </div>
+      ${data.last_beacon_time ? `
+      <div class="setting-row">
+        <span class="setting-label">Last Beacon</span>
+        <span class="setting-value" style="color:var(--text-dim);">${new Date(data.last_beacon_time).toLocaleString()}</span>
+      </div>
+      ` : ''}
+      <div class="setting-row">
+        <span class="setting-label" style="font-size:11px; color:var(--text-dim); line-height:1.5;">
+          Periodically broadcast status messages to the mesh. Available variables:<br>
+          <div style="margin-top:8px;padding:8px;background:var(--bg-primary);border-radius:4px;font-size:10px;">
+            ${varList}
+          </div>
+        </span>
+      </div>
+    `;
+    
+    el.innerHTML = html;
+    
+  } catch (e) {
+    const el = document.getElementById('beacon-config');
+    if (el) el.innerHTML = '<div class="setting-row"><span class="setting-value" style="color:var(--accent-red);">Error loading beacon configuration</span></div>';
+  }
+}
+
+async function toggleBeacon() {
+  const enabled = document.getElementById('beacon-enabled').checked;
+  
+  try {
+    const endpoint = enabled ? '/api/beacon/start' : '/api/beacon/stop';
+    const res = await fetch(endpoint, { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.status === 'started' || data.status === 'stopped') {
+      toast(enabled ? 'Beacon started' : 'Beacon stopped', 'success');
+      loadBeaconConfig();
+    } else if (data.error) {
+      toast(`Error: ${data.error}`, 'error');
+      document.getElementById('beacon-enabled').checked = !enabled;
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('beacon-enabled').checked = !enabled;
+  }
+}
+
+async function updateBeaconConfig() {
+  const interval = parseInt(document.getElementById('beacon-interval').value);
+  const template = document.getElementById('beacon-template').value;
+  const channel = parseInt(document.getElementById('beacon-channel').value);
+  const enabled = document.getElementById('beacon-enabled').checked;
+  
+  try {
+    const res = await fetch('/api/beacon', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled,
+        interval_minutes: interval,
+        message_template: template,
+        channel
+      })
+    });
+    const data = await res.json();
+    
+    if (data.status === 'saved') {
+      // Don't show toast for auto-updates, only for manual save
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function saveBeaconConfig() {
+  await updateBeaconConfig();
+  toast('Beacon configuration saved', 'success');
+  loadBeaconConfig();
+}
+
+async function testBeacon() {
+  try {
+    const res = await fetch('/api/beacon/test', { method: 'POST' });
+    const data = await res.json();
+    
+    if (data.status === 'sent') {
+      toast(`Test beacon sent: ${data.message}`, 'success');
+    } else if (data.error) {
+      toast(`Error: ${data.error}`, 'error');
     }
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
@@ -2732,6 +3031,9 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+
+// Load connection history on page load
+loadConnectionHistory();
 </script>
 
 <!-- MQTT Configuration Modal -->
