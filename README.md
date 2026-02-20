@@ -24,6 +24,7 @@ Connects to your Meshtastic device over TCP (WiFi) and provides:
 ## Requirements
 
 - Python 3.8+
+- SQLite3 (included with Python)
 - A Meshtastic device with WiFi enabled and network API accessible (TCP port 4403)
 - Modern web browser (Chrome, Firefox, Safari, Edge)
 
@@ -72,6 +73,7 @@ Each session maintains its own connection, packet log, and state.
 - Filter by RF/MQTT/Nearby
 - Click node names to send messages or traceroutes
 - See signal strength, distance, and hop count
+- **RESET NODEDB** button to clear device's node database (requires disconnect/reconnect)
 
 **Messages Tab**
 - View all text messages (incoming and outgoing)
@@ -128,12 +130,15 @@ The auto-responder automatically replies to incoming messages based on configura
 1. Every incoming TEXT_MESSAGE_APP packet is checked against active rules
 2. Rules support three trigger types:
    - **Exact** - Message must exactly match trigger (case-insensitive)
-   - **Contains** - Message must contain trigger text (case-insensitive)
+   - **Contains** - Message must contain trigger text anywhere (case-insensitive, matches substrings)
    - **Starts With** - Message must start with trigger text (case-insensitive)
 3. Each rule has a cooldown period to prevent spam (default: 60-300 seconds)
 4. Responses support variable substitution: `{sender_name}`, `{sender_short}`, `{sender_id}`, `{my_name}`, `{my_id}`, `{message}`, `{message_type}`
 5. Rules can be filtered by message type (broadcast, direct, or both)
-6. The system prevents responding to your own messages
+6. The system prevents responding to:
+   - Your own messages
+   - Messages from unknown/invalid senders (None, ?, empty)
+   - Empty messages
 
 **Configuration:**
 - Edit `autoresponder.json` or use the Device Settings tab
@@ -352,6 +357,30 @@ Browser 3 (Session C)  ──┘                                    │
 - Beacon threads run per-session with independent scheduling
 - Auto-responder rules are global but cooldowns prevent cross-session interference
 
+## NodeDB Management
+
+The **RESET NODEDB** button in the Nodes tab allows you to clear your device's internal node database. This is useful when:
+
+- Node data is stale or incorrect (e.g., wrong signal metrics from multi-hop packets)
+- You want to start fresh and rebuild the node list
+- Testing node discovery behavior
+
+**What happens:**
+1. Clears all node entries from the device's nodeDB
+2. Device reboots automatically
+3. **You must DISCONNECT and RECONNECT the session** after reset
+4. Node database rebuilds automatically as packets are received
+
+**What's preserved:**
+- Your device settings, channels, and configuration
+- Message history in the dashboard database
+
+**What's lost:**
+- All cached node info (names, positions, last heard times)
+- Signal metrics (SNR/RSSI) for all nodes
+
+The device will repopulate the nodeDB over the next few minutes/hours as it hears packets from other nodes.
+
 ## Configuration Files
 
 - `autoresponder.json` - Auto-responder rules and settings (gitignored)
@@ -359,6 +388,7 @@ Browser 3 (Session C)  ──┘                                    │
 - `message_filter.json` - Message filtering rules (gitignored)
 - `messages.db` - SQLite database for persistent message storage (gitignored)
 - `persistent_sessions.json` - Saved session configurations (gitignored)
+- `debug.log` - Debug logging output when DEBUG=true (gitignored)
 
 ## Message Persistence
 
