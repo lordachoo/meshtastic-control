@@ -15,7 +15,16 @@
       "enabled": true,
       "trigger": "test",
       "triggerType": "contains",
-      "response": "test received: {sender_short} ({sender_name} / {sender_id})",
+      "response": "reiceived: {sender_short} ({sender_name} / {sender_id})",
+      "messageType": "both",
+      "cooldownSeconds": 300
+    },
+    {
+      "id": "hi",
+      "enabled": true,
+      "trigger": "hi",
+      "triggerType": "exact",
+      "response": "received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
       "cooldownSeconds": 300
     },
@@ -24,7 +33,7 @@
       "enabled": true,
       "trigger": "testing",
       "triggerType": "contains",
-      "response": "test received: {sender_short} ({sender_name} / {sender_id})",
+      "response": "received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
       "cooldownSeconds": 300
     }

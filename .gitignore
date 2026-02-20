@@ -88,3 +88,7 @@ mqtt-bridge/mosquitto.pid
 *.tmp
 *.bak
 *.orig
+
+# stuff
+debug.log*
+messages.db

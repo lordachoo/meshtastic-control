@@ -1104,6 +1104,7 @@ body::after {
         <div style="display:flex; gap:8px; align-items:center;">
           <span id="node-count-label" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);"></span>
           <button class="btn btn-sm" onclick="refreshNodes()">REFRESH</button>
+          <button class="btn btn-sm" onclick="resetNodeDb()" style="background:var(--accent-red);">RESET NODEDB</button>
         </div>
       </div>
 
@@ -1111,15 +1112,15 @@ body::after {
         <table class="node-table">
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Name</th>
-              <th>ID</th>
-              <th>Hardware</th>
-              <th>Hops</th>
-              <th>SNR</th>
-              <th>Distance</th>
-              <th>Battery</th>
-              <th>Last Heard</th>
+              <th onclick="sortNodes('type')" style="cursor:pointer;">Type <span id="sort-type"></span></th>
+              <th onclick="sortNodes('name')" style="cursor:pointer;">Name <span id="sort-name"></span></th>
+              <th onclick="sortNodes('id')" style="cursor:pointer;">ID <span id="sort-id"></span></th>
+              <th onclick="sortNodes('hardware')" style="cursor:pointer;">Hardware <span id="sort-hardware"></span></th>
+              <th onclick="sortNodes('hops')" style="cursor:pointer;">Hops <span id="sort-hops"></span></th>
+              <th onclick="sortNodes('snr')" style="cursor:pointer;">SNR <span id="sort-snr"></span></th>
+              <th onclick="sortNodes('distance')" style="cursor:pointer;">Distance <span id="sort-distance"></span></th>
+              <th onclick="sortNodes('battery')" style="cursor:pointer;">Battery <span id="sort-battery"></span></th>
+              <th onclick="sortNodes('lastHeard')" style="cursor:pointer;">Last Heard <span id="sort-lastHeard"></span></th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -1582,6 +1583,125 @@ async function refreshNodes() {
   } catch (e) { /* silent */ }
 }
 
+async function resetNodeDb() {
+  if (!connected) {
+    toast('Not connected', 'error');
+    return;
+  }
+  
+  const activeSession = getActiveSession();
+  if (!activeSession) {
+    toast('No active session', 'error');
+    return;
+  }
+  
+  if (!confirm(`Reset nodeDB for session ${activeSession}?\n\nThis will:\n- Clear all node data on the device\n- Reboot the device\n- Require you to DISCONNECT and RECONNECT this session\n\nNodes will repopulate as packets are received after reconnecting.`)) {
+    return;
+  }
+  
+  try {
+    toast('Resetting nodeDB...', 'info');
+    const res = await fetch('/api/reset-nodedb', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_name: activeSession })
+    });
+    
+    const data = await res.json();
+    
+    if (data.error) {
+      toast(`Error: ${data.error}`, 'error');
+      return;
+    }
+    
+    toast('NodeDB reset! Device is rebooting. Please DISCONNECT and RECONNECT this session.', 'success');
+    
+    // Don't auto-refresh since device is rebooting
+    // User needs to disconnect/reconnect manually
+    
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+let nodeSort = { column: null, ascending: true };
+
+function sortNodes(column) {
+  if (nodeSort.column === column) {
+    nodeSort.ascending = !nodeSort.ascending;
+  } else {
+    nodeSort.column = column;
+    nodeSort.ascending = true;
+  }
+  
+  // Sort allNodes array
+  allNodes.sort((a, b) => {
+    let valA, valB;
+    
+    switch(column) {
+      case 'type':
+        valA = a.viaMqtt ? 1 : 0;
+        valB = b.viaMqtt ? 1 : 0;
+        break;
+      case 'name':
+        valA = (a.longName || '').toLowerCase();
+        valB = (b.longName || '').toLowerCase();
+        break;
+      case 'id':
+        valA = a.id || '';
+        valB = b.id || '';
+        break;
+      case 'hardware':
+        valA = (a.hwModel || '').toLowerCase();
+        valB = (b.hwModel || '').toLowerCase();
+        break;
+      case 'hops':
+        valA = a.hopsAway != null ? a.hopsAway : 999;
+        valB = b.hopsAway != null ? b.hopsAway : 999;
+        break;
+      case 'snr':
+        valA = a.snr != null ? a.snr : -999;
+        valB = b.snr != null ? b.snr : -999;
+        break;
+      case 'distance':
+        valA = a.distance_km != null ? a.distance_km : 999999;
+        valB = b.distance_km != null ? b.distance_km : 999999;
+        break;
+      case 'battery':
+        valA = a.batteryLevel != null ? a.batteryLevel : -1;
+        valB = b.batteryLevel != null ? b.batteryLevel : -1;
+        break;
+      case 'lastHeard':
+        valA = a.lastHeard || 0;
+        valB = b.lastHeard || 0;
+        break;
+      default:
+        return 0;
+    }
+    
+    let result = 0;
+    if (valA < valB) result = -1;
+    else if (valA > valB) result = 1;
+    
+    return nodeSort.ascending ? result : -result;
+  });
+  
+  // Update sort indicators
+  ['type', 'name', 'id', 'hardware', 'hops', 'snr', 'distance', 'battery', 'lastHeard'].forEach(col => {
+    const el = document.getElementById(`sort-${col}`);
+    if (el) {
+      if (col === column) {
+        el.textContent = nodeSort.ascending ? '▲' : '▼';
+        el.style.color = 'var(--accent-blue)';
+      } else {
+        el.textContent = '';
+      }
+    }
+  });
+  
+  renderNodes();
+}
+
 function renderNodes() {
   const tbody = document.getElementById('node-table-body');
   const rfCount = allNodes.filter(n => !n.viaMqtt).length;
@@ -1686,10 +1806,15 @@ function sendTracerouteTo(nodeId) {
 
 async function doTraceroute(dest) {
   try {
+    const activeSession = getActiveSession();
+    const payload = { dest, hopLimit: 6 };
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
     const res = await fetch('/api/traceroute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dest, hopLimit: 6 })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (data.error) { toast(data.error, 'error'); return; }
@@ -1706,10 +1831,15 @@ async function doTraceroute(dest) {
 
 async function cancelTraceroute(nodeId) {
   try {
+    const activeSession = getActiveSession();
+    const payload = { nodeId };
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
     const res = await fetch('/api/traceroute/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (data.status === 'cancelled') {
@@ -1784,7 +1914,16 @@ function renderTraceroutes(results) {
 // ── RF Sweep ───────────────────────────────────────────────────────────
 async function startSweep() {
   try {
-    const res = await fetch('/api/sweep', { method: 'POST' });
+    const activeSession = getActiveSession();
+    const payload = {};
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
+    const res = await fetch('/api/sweep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
     const data = await res.json();
     if (data.error) { toast(data.error, 'error'); return; }
 
@@ -1798,7 +1937,16 @@ async function startSweep() {
 }
 
 async function stopSweep() {
-  await fetch('/api/sweep/stop', { method: 'POST' });
+  const activeSession = getActiveSession();
+  const payload = {};
+  if (activeSession) {
+    payload.session_name = activeSession;
+  }
+  await fetch('/api/sweep/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
   toast('Sweep stopped', 'info');
   document.getElementById('sweep-btn').style.display = '';
   document.getElementById('sweep-stop-btn').style.display = 'none';
@@ -1828,15 +1976,28 @@ async function refreshSweepStatus() {
 }
 
 // ── Messages Tab ───────────────────────────────────────────────────────
-let lastMessageTime = null;
-let displayedMessageIds = new Set();
+// Session-specific message state to prevent cross-contamination
+let messageState = {};  // { sessionName: { lastTime: ..., displayedIds: Set() } }
+
+function getMessageState(sessionName) {
+  if (!messageState[sessionName]) {
+    messageState[sessionName] = {
+      lastTime: null,
+      displayedIds: new Set()
+    };
+  }
+  return messageState[sessionName];
+}
 
 async function refreshMessages() {
   if (!connected) return;
   try {
     const activeSession = getActiveSession();
-    const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
-    const url = lastMessageTime ? `/api/packets?since=${lastMessageTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
+    if (!activeSession) return;
+    
+    const state = getMessageState(activeSession);
+    const sessionParam = `&session_name=${encodeURIComponent(activeSession)}`;
+    const url = state.lastTime ? `/api/packets?since=${state.lastTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const packets = await res.json();
 
@@ -1847,17 +2008,21 @@ async function refreshMessages() {
 
     const el = document.getElementById('message-list');
     if (el.querySelector('.empty-state')) el.innerHTML = '';
-
+    
     // Filter out messages we've already displayed
     const newMessages = messages.filter(msg => {
       const msgId = `${msg.from}-${msg.time}-${msg.text}`;
-      if (displayedMessageIds.has(msgId)) return false;
-      displayedMessageIds.add(msgId);
+      if (state.displayedIds.has(msgId)) return false;
+      state.displayedIds.add(msgId);
       return true;
     });
 
     if (newMessages.length === 0) return;
-    lastMessageTime = messages[messages.length - 1].time;
+    
+    // Sort new messages by timestamp (newest first for top insertion)
+    newMessages.sort((a, b) => new Date(b.time) - new Date(a.time));
+    
+    state.lastTime = messages[messages.length - 1].time;
 
     const html = newMessages.map(msg => {
       const time = new Date(msg.time).toLocaleTimeString();
@@ -1924,9 +2089,10 @@ async function refreshMessages() {
       </div>`;
     }).join('');
 
+    // Insert new messages at the top (newest at top)
     el.insertAdjacentHTML('afterbegin', html);
 
-    // Trim old entries
+    // Trim old entries from the bottom
     while (el.children.length > 100) {
       el.removeChild(el.lastChild);
     }
@@ -1936,8 +2102,11 @@ async function refreshMessages() {
 function clearMessages() {
   document.getElementById('message-list').innerHTML =
     '<div class="empty-state" style="padding:40px;"><p>Cleared</p></div>';
-  lastMessageTime = null;
-  displayedMessageIds.clear();
+  const activeSession = getActiveSession();
+  if (activeSession && messageState[activeSession]) {
+    messageState[activeSession].lastTime = null;
+    messageState[activeSession].displayedIds.clear();
+  }
 }
 
 function replyToMessage(nodeId) {
@@ -2689,8 +2858,17 @@ async function toggleBeacon() {
   const enabled = document.getElementById('beacon-enabled').checked;
   
   try {
+    const activeSession = getActiveSession();
+    const payload = {};
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
     const endpoint = enabled ? '/api/beacon/start' : '/api/beacon/stop';
-    const res = await fetch(endpoint, { method: 'POST' });
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
     const data = await res.json();
     
     if (data.status === 'started' || data.status === 'stopped') {
@@ -2741,7 +2919,16 @@ async function saveBeaconConfig() {
 
 async function testBeacon() {
   try {
-    const res = await fetch('/api/beacon/test', { method: 'POST' });
+    const activeSession = getActiveSession();
+    const payload = {};
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
+    const res = await fetch('/api/beacon/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
     const data = await res.json();
     
     if (data.status === 'sent') {

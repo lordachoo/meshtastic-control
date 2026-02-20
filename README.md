@@ -357,6 +357,33 @@ Browser 3 (Session C)  ──┘                                    │
 - `autoresponder.json` - Auto-responder rules and settings (gitignored)
 - `beacon.json` - Beacon configuration and variable definitions (gitignored)
 - `message_filter.json` - Message filtering rules (gitignored)
+- `messages.db` - SQLite database for persistent message storage (gitignored)
+- `persistent_sessions.json` - Saved session configurations (gitignored)
+
+## Message Persistence
+
+Text messages are automatically saved to a SQLite database (`messages.db`) for persistence across browser sessions and app restarts. Only TEXT_MESSAGE_APP packets (actual messages) are stored - other packet types (position, telemetry, nodeinfo) are kept in memory only.
+
+**View Messages from Command Line:**
+
+```bash
+# List all sessions with message counts
+./view_messages.sh
+
+# View messages for a specific session (last 50)
+./view_messages.sh 3bfc
+
+# View more messages
+./view_messages.sh 3bfc 100
+```
+
+The database stores:
+- Incoming text messages (RF and MQTT)
+- Outgoing messages sent via UI
+- Auto-responder replies
+- Beacon broadcasts
+
+Messages are automatically loaded when you reconnect to a session, providing full message history.
 
 ## Documentation
 

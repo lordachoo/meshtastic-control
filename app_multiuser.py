@@ -15,6 +15,7 @@ import threading
 import logging
 import os
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from flask import Flask, render_template, jsonify, request, session, session
 from google.protobuf.json_format import MessageToDict
@@ -23,8 +24,28 @@ import meshtastic
 import meshtastic.tcp_interface
 from pubsub import pub
 
+# Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Debug logging setup
+DEBUG_ENABLED = os.environ.get('DEBUG', 'false').lower() in ('true', '1', 'yes')
+DEBUG_LOG_FILE = os.environ.get('DEBUG_LOG_FILE', 'debug.log')
+
+debug_logger = logging.getLogger('debug')
+if DEBUG_ENABLED:
+    debug_logger.setLevel(logging.DEBUG)
+    debug_handler = logging.FileHandler(DEBUG_LOG_FILE, mode='a')
+    debug_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    debug_logger.addHandler(debug_handler)
+    debug_logger.propagate = False
+else:
+    debug_logger.setLevel(logging.CRITICAL)  # Effectively disabled
+
+def debug(msg):
+    """Log debug message to file if DEBUG_ENABLED."""
+    if DEBUG_ENABLED:
+        debug_logger.debug(msg)
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -39,7 +60,6 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
 # Auto-responder configuration
 AUTORESPONDER_FILE = "autoresponder.json"
 autoresponder_config = {"enabled": True, "rules": []}
-last_response_times = {}  # Track cooldowns per rule
 
 # Beacon configuration
 BEACON_FILE = "beacon.json"
@@ -50,6 +70,143 @@ beacon_threads = {}  # session_id -> beacon thread
 PERSISTENT_SESSIONS_FILE = "persistent_sessions.json"
 persistent_sessions = {}  # session_name -> session_config
 persistent_sessions_lock = threading.Lock()
+
+# Database configuration
+DB_FILE = "messages.db"
+db_lock = threading.Lock()
+
+def init_database():
+    """Initialize SQLite database for persistent message storage."""
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Create messages table with session-based storage
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_name TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                from_id TEXT,
+                to_id TEXT,
+                portnum TEXT,
+                text TEXT,
+                snr REAL,
+                rssi REAL,
+                hop_start INTEGER,
+                hop_limit INTEGER,
+                outgoing INTEGER DEFAULT 0,
+                source TEXT,
+                channel INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create indexes for faster queries
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_session_timestamp 
+            ON messages(session_name, timestamp DESC)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_session_created 
+            ON messages(session_name, created_at DESC)
+        """)
+        
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully")
+
+def save_message_to_db(session_name, message_data):
+    """Save a message to the database."""
+    try:
+        with db_lock:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO messages 
+                (session_name, timestamp, from_id, to_id, portnum, text, 
+                 snr, rssi, hop_start, hop_limit, outgoing, source, channel)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                session_name,
+                message_data.get("time"),
+                message_data.get("from"),
+                message_data.get("to"),
+                message_data.get("portnum"),
+                message_data.get("text"),
+                message_data.get("snr"),
+                message_data.get("rssi"),
+                message_data.get("hopStart"),
+                message_data.get("hopLimit"),
+                1 if message_data.get("outgoing") else 0,
+                message_data.get("source", "RF"),
+                message_data.get("channel", 0)
+            ))
+            
+            conn.commit()
+            conn.close()
+            debug(f"[DB] Saved message to database for session '{session_name}'")
+    except Exception as e:
+        logger.error(f"Error saving message to database: {e}")
+
+def load_messages_from_db(session_name, limit=500, since=None):
+    """Load messages from database for a session."""
+    try:
+        debug(f"[DB] Loading messages for session '{session_name}', limit={limit}, since={since}")
+        with db_lock:
+            conn = sqlite3.connect(DB_FILE)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            if since:
+                cursor.execute("""
+                    SELECT * FROM messages 
+                    WHERE session_name = ? AND timestamp > ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (session_name, since, limit))
+            else:
+                cursor.execute("""
+                    SELECT * FROM messages 
+                    WHERE session_name = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (session_name, limit))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            debug(f"[DB] Found {len(rows)} messages in database")
+            
+            # Convert to list of dicts
+            messages = []
+            for row in rows:
+                messages.append({
+                    "time": row["timestamp"],
+                    "from": row["from_id"],
+                    "to": row["to_id"],
+                    "portnum": row["portnum"],
+                    "text": row["text"],
+                    "snr": row["snr"],
+                    "rssi": row["rssi"],
+                    "hopStart": row["hop_start"],
+                    "hopLimit": row["hop_limit"],
+                    "outgoing": bool(row["outgoing"]),
+                    "source": row["source"],
+                    "channel": row["channel"]
+                })
+            
+            # Reverse to get chronological order (oldest first)
+            messages.reverse()
+            debug(f"[DB] Returning {len(messages)} messages")
+            return messages
+            
+    except Exception as e:
+        logger.error(f"Error loading messages from database: {e}")
+        debug(f"[DB] Error loading messages: {e}")
+        return []
 
 # ── Session-Based State ────────────────────────────────────────────────────
 # Each session gets its own connection and state
@@ -106,12 +263,12 @@ def get_session_data(session_name=None):
                 raise ValueError(f"Session '{session_name}' not found")
             session_id = persistent_sessions[session_name]["session_id"]
             session_config = persistent_sessions[session_name]
-        print(f"[SESSION] Looking up session '{session_name}' -> session_id={session_id[:8]}")
+        debug(f"[SESSION] Looking up session '{session_name}' -> session_id={session_id[:8]}")
     else:
         # Fall back to Flask session
         session_id = get_session_id()
         session_config = None
-        print(f"[SESSION] Using Flask session_id={session_id[:8]}")
+        debug(f"[SESSION] Using Flask session_id={session_id[:8]}")
     
     with sessions_lock:
         if session_id not in sessions:
@@ -121,11 +278,11 @@ def get_session_data(session_name=None):
                 cleanup_old_sessions(force_one=True)
                 
             sessions[session_id] = create_session_data()
-            print(f"[SESSION] Created NEW session data for {session_id[:8]} (no existing data found)")
+            debug(f"[SESSION] Created NEW session data for {session_id[:8]} (no existing data found)")
             
             # If this is a persistent session with connection info, auto-reconnect
             if session_config and session_config.get("host"):
-                print(f"[SESSION] Auto-reconnecting persistent session '{session_name}' to {session_config['host']}:{session_config['port']}")
+                debug(f"[SESSION] Auto-reconnecting persistent session '{session_name}' to {session_config['host']}:{session_config['port']}")
                 try:
                     # Create interface
                     sessions[session_id]["iface"] = meshtastic.tcp_interface.TCPInterface(
@@ -141,20 +298,20 @@ def get_session_data(session_name=None):
                     time.sleep(2)
                     my_node = get_my_node(sessions[session_id])
                     sessions[session_id]["my_node_info"] = my_node
-                    print(f"[SESSION] Auto-reconnect successful for '{session_name}', cached node: {my_node.get('id') if my_node else 'unknown'}")
+                    debug(f"[SESSION] Auto-reconnect successful for '{session_name}', cached node: {my_node.get('id') if my_node else 'unknown'}")
                     
                     # Start beacon if enabled
                     if beacon_config.get("enabled", False):
-                        print(f"[BEACON] Starting beacon thread for auto-reconnected session '{session_name}'")
+                        debug(f"[BEACON] Starting beacon thread for auto-reconnected session '{session_name}'")
                         start_beacon(session_id)
                 except Exception as e:
-                    print(f"[SESSION] Auto-reconnect failed for '{session_name}': {e}")
+                    debug(f"[SESSION] Auto-reconnect failed for '{session_name}': {e}")
                     logger.error(f"Auto-reconnect failed: {e}")
             
             logger.info(f"Created new session: {session_id}")
         else:
             has_iface = sessions[session_id]["iface"] is not None
-            print(f"[SESSION] Found EXISTING session data for {session_id[:8]}, has_iface={has_iface}")
+            debug(f"[SESSION] Found EXISTING session data for {session_id[:8]}, has_iface={has_iface}")
         
         # Update last activity
         sessions[session_id]["last_activity"] = time.time()
@@ -492,7 +649,7 @@ def substitute_beacon_variables(template, session_data):
 
 def beacon_loop(session_id):
     """Background thread that sends beacon messages at configured intervals."""
-    print(f"[BEACON] Beacon thread started for session {session_id[:8]}")
+    debug(f"[BEACON] Beacon thread started for session {session_id[:8]}")
     logger.info(f"Beacon thread started for session {session_id[:8]}")
     
     while True:
@@ -518,7 +675,7 @@ def beacon_loop(session_id):
             interval_minutes = beacon_config.get("interval_minutes", 60)
             sleep_seconds = interval_minutes * 60
             
-            print(f"[BEACON] Sleeping for {interval_minutes} minutes before sending beacon")
+            debug(f"[BEACON] Sleeping for {interval_minutes} minutes before sending beacon")
             logger.info(f"Beacon thread sleeping for {interval_minutes} minutes ({sleep_seconds}s) for session {session_id[:8]}")
             
             # Sleep in small chunks to allow for quick shutdown
@@ -532,7 +689,7 @@ def beacon_loop(session_id):
                 remaining = sleep_seconds - i
                 if remaining % 60 == 0 and remaining > 0:
                     mins_remaining = remaining // 60
-                    print(f"[BEACON] Countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
+                    debug(f"[BEACON] Countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
                     logger.info(f"Beacon countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
                 
                 time.sleep(1)
@@ -554,29 +711,44 @@ def beacon_loop(session_id):
                 
                 try:
                     session_data["iface"].sendText(message, channelIndex=channel)
-                    print(f"[BEACON] Sent beacon from session {session_id[:8]}: {message}")
+                    debug(f"[BEACON] Sent beacon from session {session_id[:8]}: {message}")
                     logger.info(f"Beacon sent from session {session_id[:8]}: {message}")
                     
                     # Add to packet log
                     my_node = get_my_node(session_data)
                     my_id = my_node["id"] if my_node else "local"
                     
+                    beacon_entry = {
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "from": my_id,
+                        "to": "^all",
+                        "portnum": "TEXT_MESSAGE_APP",
+                        "text": message,
+                        "snr": None,
+                        "rssi": None,
+                        "hopStart": None,
+                        "hopLimit": None,
+                        "outgoing": True,
+                        "source": "RF",
+                        "channel": channel
+                    }
+                    
                     with sessions_lock:
-                        session_data["packet_log"].append({
-                            "time": datetime.now(timezone.utc).isoformat(),
-                            "from": my_id,
-                            "to": "^all",
-                            "portnum": "TEXT_MESSAGE_APP",
-                            "text": message,
-                            "snr": None,
-                            "rssi": None,
-                            "hopStart": None,
-                            "hopLimit": None,
-                            "outgoing": True
-                        })
+                        session_data["packet_log"].append(beacon_entry)
                         
                         if len(session_data["packet_log"]) > PACKET_LOG_MAX:
                             session_data["packet_log"].pop(0)
+                    
+                    # Save to database
+                    session_name = None
+                    with persistent_sessions_lock:
+                        for name, config in persistent_sessions.items():
+                            if config.get("session_id") == session_id:
+                                session_name = name
+                                break
+                    
+                    if session_name:
+                        save_message_to_db(session_name, beacon_entry)
                     
                     # Update last beacon time
                     beacon_config["last_beacon_time"] = datetime.now(timezone.utc).isoformat()
@@ -600,17 +772,17 @@ def start_beacon(session_id):
     """Start beacon thread for a session."""
     global beacon_threads
     
-    print(f"[BEACON] start_beacon() called for session {session_id[:8]}")
+    debug(f"[BEACON] start_beacon() called for session {session_id[:8]}")
     
     # Stop existing beacon if running
     stop_beacon(session_id)
     
     # Start new beacon thread
-    print(f"[BEACON] Creating and starting beacon thread...")
+    debug(f"[BEACON] Creating and starting beacon thread...")
     thread = threading.Thread(target=beacon_loop, args=(session_id,), daemon=True)
     thread.start()
     beacon_threads[session_id] = thread
-    print(f"[BEACON] Started beacon thread for session {session_id[:8]}")
+    debug(f"[BEACON] Started beacon thread for session {session_id[:8]}")
     logger.info(f"Started beacon for session {session_id[:8]}")
 
 
@@ -660,13 +832,26 @@ def substitute_variables(response_text, from_id, to_id, message_text, my_node, s
 
 def check_autoresponder(message_text, from_id, to_id, session_data):
     """Check if message should trigger an auto-response."""
-    global last_response_times
-    
-    print(f"[AUTO-RESPONDER] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
+    debug(f"[AUTO-RESPONDER] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
     
     if not autoresponder_config.get("enabled", False):
-        print(f"[AUTO-RESPONDER] ✗ Auto-responder is DISABLED")
-        logger.info(f"Auto-responder disabled")
+        debug("[AUTO-RESPONDER] Auto-responder is disabled.")
+        return None
+
+    # Don't respond to messages from unknown/invalid senders
+    if not from_id or from_id == "None" or from_id == "?" or from_id == "":
+        debug(f"[AUTO-RESPONDER] ✗ Message from unknown/invalid sender ({from_id}), skipping")
+        logger.info(f"Message from unknown/invalid sender ({from_id}), skipping auto-responder")
+        return None
+
+    # Get my own node ID for filtering
+    my_node = get_my_node(session_data)
+    my_id = my_node["id"] if my_node else "local"
+
+    # Don't respond to self
+    if from_id == my_id:
+        debug(f"[AUTO-RESPONDER] ✗ Message from self ({from_id}), skipping")
+        logger.info(f"Message from self ({from_id}), skipping auto-responder")
         return None
     
     # Skip null or empty messages
@@ -674,37 +859,30 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
         logger.info(f"Empty message, skipping auto-responder")
         return None
     
-    # Don't respond to our own messages
-    my_node = get_my_node(session_data)
-    if my_node and from_id == my_node["id"]:
-        print(f"[AUTO-RESPONDER] ✗ Message from self ({from_id}), skipping")
-        logger.info(f"Message from self ({from_id}), skipping auto-responder")
-        return None
-    
-    print(f"[AUTO-RESPONDER] Processing message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
+    debug(f"[AUTO-RESPONDER] Processing message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
     logger.info(f"Auto-responder checking message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
     
     is_broadcast = to_id == "^all"
     message_lower = message_text.lower().strip()
     
-    print(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}'")
+    debug(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}'")
     
     for rule in autoresponder_config.get("rules", []):
         rule_id = rule.get("id", "unknown")
         
         if not rule.get("enabled", False):
-            print(f"[AUTO-RESPONDER] Rule '{rule_id}' is disabled, skipping")
+            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' is disabled, skipping")
             logger.info(f"Rule '{rule_id}' is disabled, skipping")
             continue
         
         # Check message type filter
         msg_type = rule.get("messageType", "both")
         if msg_type == "broadcast" and not is_broadcast:
-            print(f"[AUTO-RESPONDER] Rule '{rule_id}' requires broadcast, message is direct, skipping")
+            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires broadcast, message is direct, skipping")
             logger.info(f"Rule '{rule_id}' requires broadcast, message is direct, skipping")
             continue
         if msg_type == "direct" and is_broadcast:
-            print(f"[AUTO-RESPONDER] Rule '{rule_id}' requires direct, message is broadcast, skipping")
+            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires direct, message is broadcast, skipping")
             logger.info(f"Rule '{rule_id}' requires direct, message is broadcast, skipping")
             continue
         
@@ -720,28 +898,15 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
         elif trigger_type == "startswith":
             matched = message_lower.startswith(trigger)
         
-        print(f"[AUTO-RESPONDER] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, matched={matched}")
+        debug(f"[AUTO-RESPONDER] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, matched={matched}")
         logger.info(f"Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, message='{message_lower}', matched={matched}")
         
         if not matched:
             continue
         
-        # Check cooldown
-        cooldown = rule.get("cooldownSeconds", 60)
-        now = time.time()
-        last_time = last_response_times.get(rule_id, 0)
-        time_since_last = now - last_time
-        
-        logger.info(f"Rule '{rule_id}' matched! Cooldown: {cooldown}s, time since last: {time_since_last:.1f}s")
-        
-        if now - last_time < cooldown:
-            remaining = cooldown - time_since_last
-            print(f"[AUTO-RESPONDER] ✗ Rule '{rule_id}' matched but in cooldown ({remaining:.0f}s remaining)")
-            logger.info(f"Rule '{rule_id}' still in cooldown ({time_since_last:.1f}s / {cooldown}s), skipping")
-            continue  # Still in cooldown
-        
-        # Update last response time
-        last_response_times[rule_id] = now
+        # Rule matched - send response immediately
+        debug(f"[AUTO-RESPONDER] ✓ Rule '{rule_id}' matched! Sending response...")
+        logger.info(f"Rule '{rule_id}' matched! Sending response...")
         
         # Get response and substitute variables
         response = rule.get("response", "Auto-reply")
@@ -785,6 +950,15 @@ def get_node_info(node):
     user = node.get("user", {})
     pos = node.get("position", {})
     metrics = node.get("deviceMetrics", {})
+    
+    # Determine if node is RF-reachable based on presence of actual signal metrics
+    # A node is considered RF ONLY if it has SNR or RSSI data (actual signal strength)
+    # HopsAway alone is not enough - it can be set for MQTT nodes too
+    snr = node.get("snr")
+    rssi = node.get("rssi")
+    hops_away = node.get("hopsAway")
+    has_rf_signal = snr is not None or rssi is not None
+    
     return {
         "id": user.get("id", node_id_to_hex(node.get("num", 0))),
         "num": node.get("num", 0),
@@ -800,10 +974,11 @@ def get_node_info(node):
         "channelUtil": metrics.get("channelUtilization"),
         "airUtilTx": metrics.get("airUtilTx"),
         "uptime": metrics.get("uptimeSeconds"),
-        "snr": node.get("snr"),
+        "snr": snr,
+        "rssi": rssi,
         "lastHeard": node.get("lastHeard"),
-        "hopsAway": node.get("hopsAway"),
-        "viaMqtt": node.get("viaMqtt", False),
+        "hopsAway": hops_away,
+        "viaMqtt": not has_rf_signal,  # If no actual signal metrics, it's MQTT-only
         "isFavorite": node.get("isFavorite", False),
     }
 
@@ -823,14 +998,14 @@ def get_my_node(session_data):
 
 def on_receive(packet, interface):
     """Called on every received packet - routes to correct session."""
-    print(f"[PACKET] on_receive() called! packet keys: {list(packet.keys())}")
     try:
         # Log every packet that arrives
         from_id = packet.get('fromId', '?')
         portnum = packet.get('decoded', {}).get('portnum', 'UNKNOWN')
         has_rf = packet.get('rxSnr') is not None or packet.get('rxRssi') is not None
         source = "RF" if has_rf else "MQTT"
-        print(f"[PACKET] {source} packet from {from_id}, port={portnum}")
+        debug(f"[PACKET] on_receive() called! packet keys: {list(packet.keys())}")
+        debug(f"[PACKET] {source} packet from {from_id}, port={portnum}, channel={packet.get('channel', 'N/A')}")
         logger.info(f"on_receive: {source} packet from {from_id}, port={portnum}")
         
         # Get session_id from interface
@@ -891,46 +1066,72 @@ def on_receive(packet, interface):
             # Check for auto-responder trigger
             from_id = packet.get("fromId", "?")
             to_id = packet.get("toId", "?")
-            print(f"[AUTO-RESPONDER] Checking message: '{text}' from={from_id} to={to_id}")
+            channel = packet.get("channel", 0)  # Get channel from incoming packet
+            debug(f"[AUTO-RESPONDER] Checking message: '{text}' from={from_id} to={to_id} channel={channel}")
             logger.info(f"Checking auto-responder for text='{text}' from={from_id} to={to_id}")
             auto_response = check_autoresponder(text, from_id, to_id, session_data)
             
             if auto_response:
-                print(f"[AUTO-RESPONDER] ✓ Sending response: '{auto_response}' to {from_id}")
+                debug(f"[AUTO-RESPONDER] ✓ Sending response: '{auto_response}' to {from_id} on channel {channel}")
                 logger.info(f"Auto-responding to '{text}' from {from_id} with '{auto_response}'")
+                
+                # Use same pattern as /api/send - no threading, direct call
                 try:
-                    # Send response in a separate thread to avoid blocking
-                    def send_auto_response():
-                        time.sleep(2)
-                        if session_data["iface"]:
-                            dest = None if to_id == "^all" else hex_to_int(from_id)
-                            session_data["iface"].sendText(auto_response, destinationId=dest, channelIndex=0)
-                            
-                            # Add auto-response to packet log
-                            my_node = get_my_node(session_data)
-                            my_id = my_node["id"] if my_node else "local"
-                            dest_id = "^all" if to_id == "^all" else from_id
-                            
-                            with sessions_lock:
-                                session_data["packet_log"].append({
-                                    "time": datetime.now(timezone.utc).isoformat(),
-                                    "from": my_id,
-                                    "to": dest_id,
-                                    "portnum": "TEXT_MESSAGE_APP",
-                                    "text": auto_response,
-                                    "snr": None,
-                                    "rssi": None,
-                                    "hopStart": None,
-                                    "hopLimit": None,
-                                    "outgoing": True
-                                })
-                                
-                                if len(session_data["packet_log"]) > PACKET_LOG_MAX:
-                                    session_data["packet_log"].pop(0)
+                    # Mirror the message type: broadcast->broadcast, direct->direct
+                    if to_id == "^all":
+                        dest = None  # Broadcast
+                        dest_id = "^all"
+                        debug(f"[AUTO-RESPONDER] Sending '{auto_response}' to BROADCAST")
+                        session_data["iface"].sendText(auto_response, channelIndex=channel)
+                    else:
+                        dest = hex_to_int(from_id)  # Direct to sender
+                        dest_id = from_id
+                        debug(f"[AUTO-RESPONDER] Sending '{auto_response}' to {dest_id}")
+                        session_data["iface"].sendText(auto_response, destinationId=dest, channelIndex=channel)
                     
-                    threading.Thread(target=send_auto_response, daemon=True).start()
+                    debug(f"[AUTO-RESPONDER] ✓ sendText() completed")
+                    
+                    # Add auto-response to packet log (same as /api/send)
+                    my_node = get_my_node(session_data)
+                    my_id = my_node["id"] if my_node else "local"
+                    
+                    auto_response_entry = {
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "from": my_id,
+                        "to": dest_id,
+                        "portnum": "TEXT_MESSAGE_APP",
+                        "text": auto_response,
+                        "snr": None,
+                        "rssi": None,
+                        "hopStart": None,
+                        "hopLimit": None,
+                        "outgoing": True,
+                        "source": "RF",
+                        "channel": channel
+                    }
+                    
+                    with sessions_lock:
+                        session_data["packet_log"].append(auto_response_entry)
+                        if len(session_data["packet_log"]) > PACKET_LOG_MAX:
+                            session_data["packet_log"].pop(0)
+                    
+                    debug(f"[AUTO-RESPONDER] ✓ Added to packet_log")
+                    
+                    # Save to database
+                    session_name = None
+                    with persistent_sessions_lock:
+                        for name, config in persistent_sessions.items():
+                            if config.get("session_id") == session_id:
+                                session_name = name
+                                break
+                    
+                    if session_name:
+                        save_message_to_db(session_name, auto_response_entry)
+                        debug(f"[AUTO-RESPONDER] ✓ Saved to database")
+                    
                 except Exception as e:
-                    logger.error(f"Error sending auto-response: {e}")
+                    debug(f"[AUTO-RESPONDER] ✗ Error: {type(e).__name__}: {e}")
+                    logger.error(f"Auto-responder send failed: {e}")
         
         # Process traceroute responses
         if decoded.get("portnum") == "TRACEROUTE_APP":
@@ -957,6 +1158,23 @@ def on_receive(packet, interface):
         session_data["packet_log"].append(entry)
         if len(session_data["packet_log"]) > PACKET_LOG_MAX:
             session_data["packet_log"].pop(0)
+        
+        # Save ONLY text messages to database for persistence (not all packets)
+        if decoded.get("portnum") == "TEXT_MESSAGE_APP":
+            # Determine session_name from session_id
+            session_name = None
+            with persistent_sessions_lock:
+                for name, config in persistent_sessions.items():
+                    if config.get("session_id") == session_id:
+                        session_name = name
+                        break
+            
+            if session_name:
+                # Add source field (RF vs MQTT)
+                has_rf_metrics = entry.get("snr") is not None or entry.get("rssi") is not None
+                entry_with_source = entry.copy()
+                entry_with_source["source"] = "RF" if has_rf_metrics else "MQTT"
+                save_message_to_db(session_name, entry_with_source)
     except Exception as e:
         logger.warning(f"Error processing packet: {e}")
 
@@ -1115,15 +1333,43 @@ def nodes():
     return jsonify(result)
 
 
+@app.route("/api/reset-nodedb", methods=["POST"])
+def reset_nodedb():
+    """Reset the nodeDB for a specific session's device."""
+    data = request.json or {}
+    session_name = data.get('session_name')
+    
+    if not session_name:
+        return jsonify({"error": "session_name required"}), 400
+    
+    session_data = get_session_data(session_name)
+    i = session_data["iface"]
+    
+    if not i:
+        return jsonify({"error": "Not connected"}), 400
+    
+    try:
+        debug(f"[NODEDB] Resetting nodeDB for session '{session_name}'")
+        i.localNode.resetNodeDb()
+        debug(f"[NODEDB] ✓ NodeDB reset successful for session '{session_name}'")
+        logger.info(f"NodeDB reset for session '{session_name}'")
+        return jsonify({"status": "success", "message": "NodeDB reset successfully"})
+    except Exception as e:
+        debug(f"[NODEDB] ✗ Failed to reset nodeDB: {type(e).__name__}: {e}")
+        logger.error(f"NodeDB reset failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/traceroute", methods=["POST"])
 def traceroute():
     """Send a traceroute to a specific node."""
-    session_data = get_session_data()
+    data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i:
         return jsonify({"error": "Not connected"}), 400
 
-    data = request.json or {}
     dest = data.get("dest")
     hop_limit = int(data.get("hopLimit", 6))
 
@@ -1209,8 +1455,9 @@ def traceroute_results_endpoint():
 @app.route("/api/traceroute/cancel", methods=["POST"])
 def cancel_traceroute():
     """Cancel a pending traceroute."""
-    session_data = get_session_data()
     data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     node_id = data.get("nodeId")
     
     if not node_id:
@@ -1230,7 +1477,9 @@ def cancel_traceroute():
 @app.route("/api/sweep", methods=["POST"])
 def sweep():
     """Automated RF sweep - traceroute all non-MQTT nodes to map RF reach."""
-    session_data = get_session_data()
+    data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     i = session_data["iface"]
     if not i or not i.nodes:
         return jsonify({"error": "Not connected"}), 400
@@ -1352,7 +1601,9 @@ def sweep_status_endpoint():
 @app.route("/api/sweep/stop", methods=["POST"])
 def sweep_stop():
     """Stop a running sweep."""
-    session_data = get_session_data()
+    data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     session_data["sweep_status"]["running"] = False
     return jsonify({"status": "stopped"})
 
@@ -1391,7 +1642,7 @@ def send_message():
         my_node = get_my_node(session_data)
         my_id = my_node["id"] if my_node else "local"
         
-        session_data["packet_log"].append({
+        outgoing_entry = {
             "time": datetime.now(timezone.utc).isoformat(),
             "from": my_id,
             "to": dest_id,
@@ -1401,11 +1652,19 @@ def send_message():
             "rssi": None,
             "hopStart": None,
             "hopLimit": None,
-            "outgoing": True
-        })
+            "outgoing": True,
+            "source": "RF",
+            "channel": channel
+        }
+        
+        session_data["packet_log"].append(outgoing_entry)
         
         if len(session_data["packet_log"]) > PACKET_LOG_MAX:
             session_data["packet_log"].pop(0)
+        
+        # Save to database
+        if session_name:
+            save_message_to_db(session_name, outgoing_entry)
 
         return jsonify({"status": "sent"})
     except Exception as e:
@@ -1414,14 +1673,82 @@ def send_message():
 
 @app.route("/api/packets")
 def packets():
-    """Get recent packet log."""
+    """Get recent packet log - loads text messages from database, merges with in-memory packets."""
     session_name = request.args.get('session_name')
     session_data = get_session_data(session_name)
     since = request.args.get("since")
+    
+    debug(f"[API] /api/packets called with session_name='{session_name}', since={since}")
+    
+    # Load text messages from database (persistent storage)
+    # Then merge with in-memory packet_log (which has all packet types)
+    if session_name:
+        if since:
+            # Polling mode: return only NEW packets since timestamp
+            # Load new text messages from database
+            db_text_messages = load_messages_from_db(session_name, limit=500, since=since)
+            debug(f"[API] Polling mode: Loaded {len(db_text_messages)} NEW text messages from database since {since}")
+            
+            # Get new in-memory packets
+            in_memory = [p for p in session_data["packet_log"] if p["time"] > since]
+            debug(f"[API] Polling mode: {len(in_memory)} NEW in-memory packets since {since}")
+            
+            # Merge and deduplicate
+            all_packets = db_text_messages + in_memory
+            seen = set()
+            unique_packets = []
+            for pkt in all_packets:
+                key = (pkt["time"], pkt.get("from"), pkt.get("to"), pkt.get("text"))
+                if key not in seen:
+                    seen.add(key)
+                    unique_packets.append(pkt)
+            
+            unique_packets.sort(key=lambda x: x["time"])
+            debug(f"[API] Returning {len(unique_packets)} NEW packets")
+            return jsonify(unique_packets)
+        else:
+            # Initial load: return ALL text messages from database + recent in-memory packets
+            db_text_messages = load_messages_from_db(session_name, limit=500, since=None)
+            debug(f"[API] Initial load: Loaded {len(db_text_messages)} text messages from database")
+            
+            # Get all in-memory packets
+            in_memory = session_data["packet_log"]
+            debug(f"[API] Initial load: {len(in_memory)} in-memory packets")
+            
+            # Separate text messages from other packets to ensure text messages are always included
+            in_memory_text = [p for p in in_memory if p.get("portnum") == "TEXT_MESSAGE_APP"]
+            in_memory_other = [p for p in in_memory if p.get("portnum") != "TEXT_MESSAGE_APP"]
+            
+            # Merge text messages and deduplicate
+            all_text = db_text_messages + in_memory_text
+            seen = set()
+            unique_text = []
+            for pkt in all_text:
+                key = (pkt["time"], pkt.get("from"), pkt.get("to"), pkt.get("text"))
+                if key not in seen:
+                    seen.add(key)
+                    unique_text.append(pkt)
+            
+            # Take last 100 non-text packets
+            other_packets = in_memory_other[-100:]
+            
+            # Combine and sort
+            result = unique_text + other_packets
+            result.sort(key=lambda x: x["time"])
+            result = result[-100:]  # Last 100 total
+            
+            debug(f"[API] Returning {len(result)} total packets ({len([p for p in result if p.get('portnum')=='TEXT_MESSAGE_APP'])} text messages)")
+            return jsonify(result)
+    
+    # Fallback to in-memory only (no session_name)
+    debug(f"[API] Falling back to in-memory only (no session_name)")
     if since:
         filtered = [p for p in session_data["packet_log"] if p["time"] > since]
+        debug(f"[API] Returning {len(filtered)} filtered in-memory packets")
         return jsonify(filtered)
-    return jsonify(session_data["packet_log"][-100:])  # Last 100 by default
+    result = session_data["packet_log"][-100:]
+    debug(f"[API] Returning {len(result)} in-memory packets")
+    return jsonify(result)
 
 
 @app.route("/api/device/config")
@@ -1619,27 +1946,27 @@ def get_store_forward_status():
     
     try:
         sf_config = None
-        print(f"[STORE&FORWARD] Checking Store & Forward status for session '{session_name}'")
-        print(f"[STORE&FORWARD] Has localNode: {hasattr(i, 'localNode')}")
+        debug(f"[STORE&FORWARD] Checking Store & Forward status for session '{session_name}'")
+        debug(f"[STORE&FORWARD] Has localNode: {hasattr(i, 'localNode')}")
         
         if hasattr(i, 'localNode') and i.localNode:
-            print(f"[STORE&FORWARD] Has moduleConfig: {hasattr(i.localNode, 'moduleConfig')}")
+            debug(f"[STORE&FORWARD] Has moduleConfig: {hasattr(i.localNode, 'moduleConfig')}")
             if hasattr(i.localNode, 'moduleConfig'):
                 # Check for store_forward using protobuf HasField method
                 has_sf = i.localNode.moduleConfig.HasField('store_forward')
-                print(f"[STORE&FORWARD] Has store_forward field: {has_sf}")
+                debug(f"[STORE&FORWARD] Has store_forward field: {has_sf}")
                 
                 if has_sf:
                     sf_raw = i.localNode.moduleConfig.store_forward
-                    print(f"[STORE&FORWARD] Raw protobuf fields: {dir(sf_raw)}")
+                    debug(f"[STORE&FORWARD] Raw protobuf fields: {dir(sf_raw)}")
                     sf_config = MessageToDict(sf_raw)
-                    print(f"[STORE&FORWARD] Full config dict: {sf_config}")
+                    debug(f"[STORE&FORWARD] Full config dict: {sf_config}")
                 else:
-                    print(f"[STORE&FORWARD] store_forward field not set in moduleConfig")
+                    debug(f"[STORE&FORWARD] store_forward field not set in moduleConfig")
             else:
-                print(f"[STORE&FORWARD] moduleConfig not found on localNode")
+                debug(f"[STORE&FORWARD] moduleConfig not found on localNode")
         else:
-            print(f"[STORE&FORWARD] localNode not available")
+            debug(f"[STORE&FORWARD] localNode not available")
         
         if not sf_config:
             result = {
@@ -1647,7 +1974,7 @@ def get_store_forward_status():
                 "available": False,
                 "message": "Store & Forward module not available on this device"
             }
-            print(f"[STORE&FORWARD] Returning: {result}")
+            debug(f"[STORE&FORWARD] Returning: {result}")
             return jsonify(result)
         
         # Get statistics from the module
@@ -1661,7 +1988,7 @@ def get_store_forward_status():
             "isServer": sf_config.get("isServer", False)
         }
         
-        print(f"[STORE&FORWARD] Returning stats: enabled={stats['enabled']}, available={stats['available']}, isServer={stats['isServer']}, records={stats['records']}")
+        debug(f"[STORE&FORWARD] Returning stats: enabled={stats['enabled']}, available={stats['available']}, isServer={stats['isServer']}, records={stats['records']}")
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Error getting Store & Forward status: {e}")
@@ -1895,8 +2222,10 @@ def update_beacon_config():
 @app.route("/api/beacon/start", methods=["POST"])
 def start_beacon_endpoint():
     """Manually start beacon."""
+    data = request.json or {}
+    session_name = data.get('session_name')
     session_id = get_session_id()
-    session_data = get_session_data()
+    session_data = get_session_data(session_name)
     
     if not session_data["iface"]:
         return jsonify({"error": "Not connected"}), 400
@@ -1911,6 +2240,8 @@ def start_beacon_endpoint():
 @app.route("/api/beacon/stop", methods=["POST"])
 def stop_beacon_endpoint():
     """Manually stop beacon."""
+    data = request.json or {}
+    session_name = data.get('session_name')
     session_id = get_session_id()
     
     beacon_config["enabled"] = False
@@ -1923,7 +2254,9 @@ def stop_beacon_endpoint():
 @app.route("/api/beacon/test", methods=["POST"])
 def test_beacon():
     """Send a test beacon message immediately."""
-    session_data = get_session_data()
+    data = request.json or {}
+    session_name = data.get('session_name')
+    session_data = get_session_data(session_name)
     
     if not session_data["iface"]:
         return jsonify({"error": "Not connected"}), 400
@@ -2149,6 +2482,9 @@ def update_session(session_name):
 # ── Main ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Initialize database
+    init_database()
+    
     # Load configs on startup
     load_autoresponder_config()
     load_beacon_config()
@@ -2160,5 +2496,6 @@ if __name__ == "__main__":
     print(f"  Auto-responder: {'ENABLED' if autoresponder_config.get('enabled') else 'DISABLED'} ({len(autoresponder_config.get('rules', []))} rules)")
     print(f"  Beacon: {'ENABLED' if beacon_config.get('enabled') else 'DISABLED'} (interval: {beacon_config.get('interval_minutes', 60)}min)")
     print(f"  Persistent Sessions: {len(persistent_sessions)} configured")
+    print(f"  Message Database: {DB_FILE}")
     print("=" * 60)
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True, threaded=True)
