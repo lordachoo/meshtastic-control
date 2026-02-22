@@ -92,3 +92,4 @@ mqtt-bridge/mosquitto.pid
 # stuff
 debug.log*
 messages.db
+autoresponder.json

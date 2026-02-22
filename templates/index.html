@@ -1500,6 +1500,13 @@ function setDisconnected() {
   if (pollInterval) clearInterval(pollInterval);
   if (packetPollInterval) clearInterval(packetPollInterval);
   if (sweepPollInterval) clearInterval(sweepPollInterval);
+  
+  // Reset message state for active session so messages reload from database on reconnect
+  const activeSession = getActiveSession();
+  if (activeSession && messageState[activeSession]) {
+    messageState[activeSession].lastTime = null;
+    messageState[activeSession].displayedIds = new Set();
+  }
 }
 
 // ── Status Refresh ─────────────────────────────────────────────────────
@@ -1997,12 +2004,9 @@ async function refreshMessages() {
     
     const state = getMessageState(activeSession);
     const sessionParam = `&session_name=${encodeURIComponent(activeSession)}`;
-    const url = state.lastTime ? `/api/packets?since=${state.lastTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
+    const url = state.lastTime ? `/api/messages?since=${state.lastTime}${sessionParam}` : `/api/messages?${sessionParam.substring(1)}`;
     const res = await fetch(url);
-    const packets = await res.json();
-
-    // Filter only text messages
-    const messages = packets.filter(p => p.portnum === 'TEXT_MESSAGE_APP' && p.text);
+    const messages = await res.json();
     
     if (messages.length === 0) return;
 
@@ -2759,6 +2763,36 @@ async function toggleAutoresponder() {
 }
 
 // ── Beacon Configuration ────────────────────────────────────────────────
+function updateBeaconCountdown(nextBeaconTime) {
+  const el = document.getElementById('next-beacon-countdown');
+  if (!el || !nextBeaconTime) return;
+  
+  const next = new Date(nextBeaconTime);
+  const now = new Date();
+  const diff = next - now;
+  
+  if (diff <= 0) {
+    el.textContent = 'Sending soon...';
+    el.style.color = 'var(--accent-yellow)';
+    return;
+  }
+  
+  const minutes = Math.floor(diff / 60000);
+  const seconds = Math.floor((diff % 60000) / 1000);
+  
+  if (minutes > 60) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    el.textContent = `in ${hours}h ${mins}m`;
+  } else if (minutes > 0) {
+    el.textContent = `in ${minutes}m ${seconds}s`;
+  } else {
+    el.textContent = `in ${seconds}s`;
+  }
+  
+  el.style.color = 'var(--accent-green)';
+}
+
 async function loadBeaconConfig() {
   try {
     const res = await fetch('/api/beacon');

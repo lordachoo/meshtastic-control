@@ -16,7 +16,7 @@ import logging
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, jsonify, request, session, session
 from google.protobuf.json_format import MessageToDict
 
@@ -1671,6 +1671,29 @@ def send_message():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/messages")
+def messages():
+    """Get text messages only - loads from database."""
+    session_name = request.args.get('session_name')
+    since = request.args.get("since")
+    
+    if not session_name:
+        return jsonify([])
+    
+    debug(f"[API] /api/messages called with session_name='{session_name}', since={since}")
+    
+    if since:
+        # Polling mode: return only NEW messages since timestamp
+        db_messages = load_messages_from_db(session_name, limit=500, since=since)
+        debug(f"[API] Returning {len(db_messages)} NEW messages since {since}")
+        return jsonify(db_messages)
+    else:
+        # Initial load: return ALL messages from database
+        db_messages = load_messages_from_db(session_name, limit=500, since=None)
+        debug(f"[API] Returning {len(db_messages)} total messages")
+        return jsonify(db_messages)
+
+
 @app.route("/api/packets")
 def packets():
     """Get recent packet log - loads text messages from database, merges with in-memory packets."""
@@ -2203,18 +2226,25 @@ def update_beacon_config():
     save_beacon_config()
     
     # Handle beacon state changes
-    session_id = get_session_id()
     new_enabled = beacon_config.get("enabled", False)
     
     if new_enabled and not old_enabled:
-        # Beacon was just enabled - start it
-        start_beacon(session_id)
+        # Beacon was just enabled - start it for all connected sessions
+        with sessions_lock:
+            for session_id, session_data in sessions.items():
+                if session_data["iface"]:
+                    start_beacon(session_id)
     elif not new_enabled and old_enabled:
-        # Beacon was just disabled - stop it
-        stop_beacon(session_id)
+        # Beacon was just disabled - stop all beacon threads
+        with sessions_lock:
+            for session_id in list(sessions.keys()):
+                stop_beacon(session_id)
     elif new_enabled:
-        # Beacon is enabled and config changed - restart it
-        start_beacon(session_id)
+        # Beacon is enabled and config changed - restart all beacons
+        with sessions_lock:
+            for session_id, session_data in sessions.items():
+                if session_data["iface"]:
+                    start_beacon(session_id)
     
     return jsonify({"status": "saved"})
 
