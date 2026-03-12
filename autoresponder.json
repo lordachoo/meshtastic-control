@@ -8,6 +8,7 @@
       "triggerType": "exact",
       "response": "pong from {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 60
     },
     {
@@ -17,6 +18,7 @@
       "triggerType": "contains",
       "response": "received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 300
     },
     {
@@ -26,6 +28,7 @@
       "triggerType": "contains",
       "response": "received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 300
     },
     {
@@ -35,6 +38,7 @@
       "triggerType": "exact",
       "response": "received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 300
     }
   ],
@@ -45,6 +49,7 @@
     "{my_name}": "Your node's full name",
     "{my_id}": "Your node's ID",
     "{message}": "The original message text",
-    "{message_type}": "Either 'broadcast' or 'direct'"
+    "{message_type}": "Either 'broadcast' or 'direct'",
+    "{source_type}": "Either 'RF' or 'MQTT'"
   }
 }

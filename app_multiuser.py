@@ -578,13 +578,12 @@ def substitute_beacon_variables(template, session_data):
     """Replace variables in beacon template with actual values."""
     i = session_data["iface"]
     if not i:
+        logger.warning("[BEACON] No interface available for beacon substitution")
         return template
     
-    my_node = get_my_node(session_data)
-    my_name = my_node.get("longName", "Node") if my_node else "Node"
-    my_id = my_node.get("id", "!unknown") if my_node else "!unknown"
-    
-    # Get device metrics
+    # Initialize defaults
+    my_name = "Node"
+    my_id = "!unknown"
     battery = "?"
     voltage = "?"
     temp = "?"
@@ -594,37 +593,72 @@ def substitute_beacon_variables(template, session_data):
     alt = "?"
     
     try:
-        # Try to get metrics from myInfo/localNode
+        # Try to get node info - be more resilient
+        my_node_num = None
         if hasattr(i, 'myInfo') and i.myInfo:
             my_node_num = i.myInfo.my_node_num
-            if my_node_num and my_node_num in i.nodesByNum:
+        
+        if not my_node_num:
+            logger.warning("[BEACON] myInfo.my_node_num not available")
+        
+        # Try multiple methods to get node data
+        node = None
+        if my_node_num:
+            # Method 1: Try nodesByNum
+            if hasattr(i, 'nodesByNum') and my_node_num in i.nodesByNum:
                 node = i.nodesByNum[my_node_num]
+                logger.debug(f"[BEACON] Got node from nodesByNum: {my_node_num}")
+            # Method 2: Try nodes dict if nodesByNum failed
+            elif hasattr(i, 'nodes') and i.nodes:
+                for node_id, node_data in i.nodes.items():
+                    if node_data.get('num') == my_node_num:
+                        node = node_data
+                        logger.debug(f"[BEACON] Got node from nodes dict: {node_id}")
+                        break
+        
+        if node:
+            # Get user info
+            user = node.get("user", {})
+            my_name = user.get("longName", "Node")
+            my_id = user.get("id", "!unknown")
+            
+            # Get device metrics from telemetry
+            if 'deviceMetrics' in node:
+                metrics = node['deviceMetrics']
+                battery_val = metrics.get('batteryLevel')
+                if battery_val is not None:
+                    battery = str(battery_val)
+                voltage_val = metrics.get('voltage')
+                if voltage_val is not None:
+                    voltage = str(voltage_val)
+                uptime_sec = metrics.get('uptimeSeconds', 0)
+                if uptime_sec:
+                    hours = uptime_sec // 3600
+                    minutes = (uptime_sec % 3600) // 60
+                    uptime = f"{hours}h{minutes}m"
+            
+            # Get position
+            if 'position' in node:
+                pos = node['position']
+                lat_raw = pos.get('latitude', 0)
+                lon_raw = pos.get('longitude', 0)
+                alt_raw = pos.get('altitude', 0)
+                if lat_raw:
+                    lat = f"{lat_raw:.6f}"
+                if lon_raw:
+                    lon = f"{lon_raw:.6f}"
+                if alt_raw:
+                    alt = str(int(alt_raw))
+        else:
+            logger.warning(f"[BEACON] Could not find node data for my_node_num={my_node_num}")
+            # Log diagnostic info
+            if hasattr(i, 'nodesByNum'):
+                logger.warning(f"[BEACON] nodesByNum has {len(i.nodesByNum)} nodes: {list(i.nodesByNum.keys())}")
+            if hasattr(i, 'nodes'):
+                logger.warning(f"[BEACON] nodes dict has {len(i.nodes) if i.nodes else 0} nodes")
                 
-                # Get device metrics from telemetry
-                if 'deviceMetrics' in node:
-                    metrics = node['deviceMetrics']
-                    battery = str(metrics.get('batteryLevel', '?'))
-                    voltage = str(metrics.get('voltage', '?'))
-                    uptime_sec = metrics.get('uptimeSeconds', 0)
-                    if uptime_sec:
-                        hours = uptime_sec // 3600
-                        minutes = (uptime_sec % 3600) // 60
-                        uptime = f"{hours}h{minutes}m"
-                
-                # Get position
-                if 'position' in node:
-                    pos = node['position']
-                    lat_raw = pos.get('latitude', 0)
-                    lon_raw = pos.get('longitude', 0)
-                    alt_raw = pos.get('altitude', 0)
-                    if lat_raw:
-                        lat = f"{lat_raw:.6f}"
-                    if lon_raw:
-                        lon = f"{lon_raw:.6f}"
-                    if alt_raw:
-                        alt = str(int(alt_raw))
     except Exception as e:
-        logger.warning(f"Error getting beacon metrics: {e}")
+        logger.error(f"[BEACON] Error getting beacon metrics: {e}", exc_info=True)
     
     # Variable substitutions
     variables = {
@@ -644,6 +678,7 @@ def substitute_beacon_variables(template, session_data):
     for var, value in variables.items():
         result = result.replace(var, str(value))
     
+    logger.info(f"[BEACON] Substituted beacon: {result}")
     return result
 
 
@@ -706,6 +741,15 @@ def beacon_loop(session_id):
             # NOW send beacon message after the wait
             template = beacon_config.get("message_template", "")
             if template:
+                # Refresh node database before sending beacon to get fresh metrics
+                try:
+                    logger.info(f"[BEACON] Requesting fresh node info for session {session_id[:8]}")
+                    session_data["iface"].getNode('^local', requestChannelAttempts=1)
+                    # Give it a moment to update
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"[BEACON] Could not refresh node info: {e}")
+                
                 message = substitute_beacon_variables(template, session_data)
                 channel = beacon_config.get("channel", 0)
                 
@@ -794,33 +838,51 @@ def stop_beacon(session_id):
         # Thread is daemon and will check enabled flag on next iteration
 
 
-def substitute_variables(response_text, from_id, to_id, message_text, my_node, session_data):
-    """Replace variables in response text with actual values."""
+def substitute_variables(response_text, from_id, to_id, message_text, my_node, session_data, packet=None):
+    """Replace variables in auto-response text with actual values."""
     i = session_data["iface"]
+    if not i:
+        return response_text
     
     # Get sender node info
     sender_node = None
-    if i and i.nodes:
-        for node_id, node in i.nodes.items():
-            if node.get("user", {}).get("id") == from_id:
-                sender_node = node
-                break
+    sender_name = "Unknown"
+    sender_short = "????"
+    sender_id = from_id
     
-    sender_name = sender_node.get("user", {}).get("longName", "Unknown") if sender_node else "Unknown"
-    sender_short = sender_node.get("user", {}).get("shortName", "???") if sender_node else "???"
+    try:
+        # Try to find sender in nodes
+        if hasattr(i, 'nodesByNum') and i.nodesByNum:
+            for node_num, node_data in i.nodesByNum.items():
+                node_user = node_data.get("user", {})
+                if node_user.get("id") == from_id:
+                    sender_node = node_data
+                    sender_name = node_user.get("longName", "Unknown")
+                    sender_short = node_user.get("shortName", "????")
+                    break
+    except Exception as e:
+        logger.warning(f"Error getting sender node info: {e}")
     
+    # Get my node info
     my_name = my_node.get("longName", "Node") if my_node else "Node"
     my_id = my_node.get("id", "!unknown") if my_node else "!unknown"
+    
+    # Determine source type
+    source_type = "unknown"
+    if packet:
+        has_rf_metrics = packet.get("rxSnr") is not None or packet.get("rxRssi") is not None
+        source_type = "RF" if has_rf_metrics else "MQTT"
     
     # Variable substitutions
     variables = {
         "{sender_name}": sender_name,
         "{sender_short}": sender_short,
-        "{sender_id}": from_id,
+        "{sender_id}": sender_id,
         "{my_name}": my_name,
         "{my_id}": my_id,
         "{message}": message_text,
-        "{message_type}": "broadcast" if to_id == "^all" else "direct"
+        "{message_type}": "broadcast" if to_id == "^all" else "direct",
+        "{source_type}": source_type
     }
     
     result = response_text
@@ -830,7 +892,7 @@ def substitute_variables(response_text, from_id, to_id, message_text, my_node, s
     return result
 
 
-def check_autoresponder(message_text, from_id, to_id, session_data):
+def check_autoresponder(message_text, from_id, to_id, session_data, packet=None):
     """Check if message should trigger an auto-response."""
     debug(f"[AUTO-RESPONDER] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
     
@@ -865,7 +927,13 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
     is_broadcast = to_id == "^all"
     message_lower = message_text.lower().strip()
     
-    debug(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}'")
+    # Determine message source (MQTT or RF)
+    message_source = None
+    if packet:
+        has_rf_metrics = packet.get("rxSnr") is not None or packet.get("rxRssi") is not None
+        message_source = "rf" if has_rf_metrics else "mqtt"
+    
+    debug(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}' (source={message_source})")
     
     for rule in autoresponder_config.get("rules", []):
         rule_id = rule.get("id", "unknown")
@@ -885,6 +953,18 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
             debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires direct, message is broadcast, skipping")
             logger.info(f"Rule '{rule_id}' requires direct, message is broadcast, skipping")
             continue
+        
+        # Check source type filter (MQTT/RF)
+        source_type = rule.get("sourceType", "both")
+        if message_source and source_type != "both":
+            if source_type == "mqtt" and message_source != "mqtt":
+                debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires MQTT, message is RF, skipping")
+                logger.info(f"Rule '{rule_id}' requires MQTT, message is RF, skipping")
+                continue
+            if source_type == "rf" and message_source != "rf":
+                debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires RF, message is MQTT, skipping")
+                logger.info(f"Rule '{rule_id}' requires RF, message is MQTT, skipping")
+                continue
         
         # Check trigger
         trigger = rule.get("trigger", "").lower()
@@ -910,7 +990,7 @@ def check_autoresponder(message_text, from_id, to_id, session_data):
         
         # Get response and substitute variables
         response = rule.get("response", "Auto-reply")
-        response = substitute_variables(response, from_id, to_id, message_text, my_node, session_data)
+        response = substitute_variables(response, from_id, to_id, message_text, my_node, session_data, packet)
         
         return response
     
@@ -1069,7 +1149,7 @@ def on_receive(packet, interface):
             channel = packet.get("channel", 0)  # Get channel from incoming packet
             debug(f"[AUTO-RESPONDER] Checking message: '{text}' from={from_id} to={to_id} channel={channel}")
             logger.info(f"Checking auto-responder for text='{text}' from={from_id} to={to_id}")
-            auto_response = check_autoresponder(text, from_id, to_id, session_data)
+            auto_response = check_autoresponder(text, from_id, to_id, session_data, packet)
             
             if auto_response:
                 debug(f"[AUTO-RESPONDER] ✓ Sending response: '{auto_response}' to {from_id} on channel {channel}")

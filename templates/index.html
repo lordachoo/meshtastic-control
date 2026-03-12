@@ -2696,6 +2696,12 @@ async function loadAutoresponderConfig() {
           'both': 'Both'
         }[rule.messageType] || rule.messageType;
         
+        const sourceTypeLabel = {
+          'mqtt': 'MQTT only',
+          'rf': 'RF only',
+          'both': 'Both'
+        }[rule.sourceType || 'both'] || (rule.sourceType || 'Both');
+        
         html += `
           <div class="setting-row" style="background:rgba(255,255,255,0.02);padding:12px;border-radius:4px;margin-bottom:8px;">
             <div style="display:flex;justify-content:space-between;align-items:start;">
@@ -2704,7 +2710,7 @@ async function loadAutoresponderConfig() {
                   ${ruleEnabled ? '✓' : '✗'} "${rule.trigger}" → "${rule.response}"
                 </div>
                 <div style="font-size:11px;color:var(--text-dim);">
-                  ${triggerTypeLabel} • ${messageTypeLabel} • Cooldown: ${rule.cooldownSeconds}s
+                  ${triggerTypeLabel} • ${messageTypeLabel} • ${sourceTypeLabel} • Cooldown: ${rule.cooldownSeconds}s
                 </div>
               </div>
             </div>
@@ -2724,7 +2730,8 @@ async function loadAutoresponderConfig() {
           • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{my_name}</code> - Your node's name<br>
           • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{my_id}</code> - Your node's ID<br>
           • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{message}</code> - Original message text<br>
-          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{message_type}</code> - "broadcast" or "direct"
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{message_type}</code> - "broadcast" or "direct"<br>
+          • <code style="background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:3px;">{source_type}</code> - "RF" or "MQTT"
         </span>
       </div>
       <div class="setting-row">

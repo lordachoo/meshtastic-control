@@ -8,6 +8,7 @@
       "triggerType": "exact",
       "response": "pong from {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 60
     },
     {
@@ -17,15 +18,27 @@
       "triggerType": "contains",
       "response": "test received: {sender_short} ({sender_name} / {sender_id})",
       "messageType": "both",
+      "sourceType": "both",
       "cooldownSeconds": 300
     },
     {
-      "id": "testing",
+      "id": "rf_only_test",
       "enabled": true,
-      "trigger": "testing",
-      "triggerType": "contains",
-      "response": "test received: {sender_short} ({sender_name} / {sender_id})",
+      "trigger": "rf test",
+      "triggerType": "exact",
+      "response": "RF test received from {sender_short}",
       "messageType": "both",
+      "sourceType": "rf",
+      "cooldownSeconds": 300
+    },
+    {
+      "id": "mqtt_only_test",
+      "enabled": false,
+      "trigger": "mqtt test",
+      "triggerType": "exact",
+      "response": "MQTT test received from {sender_short}",
+      "messageType": "both",
+      "sourceType": "mqtt",
       "cooldownSeconds": 300
     }
   ],
@@ -36,6 +49,7 @@
     "{my_name}": "Your node's full name",
     "{my_id}": "Your node's ID",
     "{message}": "The original message text",
-    "{message_type}": "Either 'broadcast' or 'direct'"
+    "{message_type}": "Either 'broadcast' or 'direct'",
+    "{source_type}": "Either 'RF' or 'MQTT'"
   }
 }
