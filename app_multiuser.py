@@ -23,6 +23,8 @@ from google.protobuf.json_format import MessageToDict
 import meshtastic
 import meshtastic.tcp_interface
 from pubsub import pub
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
@@ -549,6 +551,23 @@ def save_autoresponder_config():
             json.dump(autoresponder_config, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving auto-responder config: {e}")
+
+
+class AutoresponderConfigHandler(FileSystemEventHandler):
+    """Handler for autoresponder.json file changes."""
+    def __init__(self):
+        self.last_modified = time.time()
+    
+    def on_modified(self, event):
+        if event.src_path.endswith('autoresponder.json'):
+            # Debounce: only reload if at least 1 second has passed
+            now = time.time()
+            if now - self.last_modified > 1.0:
+                self.last_modified = now
+                logger.info("autoresponder.json modified, reloading configuration...")
+                print("\n[CONFIG] autoresponder.json changed, reloading...")
+                load_autoresponder_config()
+                print(f"[CONFIG] Reloaded: {'ENABLED' if autoresponder_config.get('enabled') else 'DISABLED'} ({len(autoresponder_config.get('rules', []))} rules)\n")
 
 
 def load_beacon_config():
@@ -2600,6 +2619,13 @@ if __name__ == "__main__":
     load_beacon_config()
     load_persistent_sessions()
     
+    # Start file watcher for autoresponder.json
+    event_handler = AutoresponderConfigHandler()
+    observer = Observer()
+    observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(AUTORESPONDER_FILE)) or '.', recursive=False)
+    observer.start()
+    logger.info("Started file watcher for autoresponder.json")
+    
     print("=" * 60)
     print("  Meshtastic Dashboard")
     print("  Open http://localhost:5000 in your browser")
@@ -2607,5 +2633,11 @@ if __name__ == "__main__":
     print(f"  Beacon: {'ENABLED' if beacon_config.get('enabled') else 'DISABLED'} (interval: {beacon_config.get('interval_minutes', 60)}min)")
     print(f"  Persistent Sessions: {len(persistent_sessions)} configured")
     print(f"  Message Database: {DB_FILE}")
+    print(f"  File Watcher: Monitoring autoresponder.json for changes")
     print("=" * 60)
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True, threaded=True)
+    
+    try:
+        app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=True, threaded=True)
+    finally:
+        observer.stop()
+        observer.join()
