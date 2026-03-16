@@ -3687,8 +3687,8 @@ async function loadStoreForwardStatus() {
       configCard.style.display = 'block';
       disabledInfo.style.display = 'none';
       
-      document.getElementById('sf-history-max').textContent = `${data.historyReturnMax || 0} messages`;
-      document.getElementById('sf-history-window').textContent = `${data.historyReturnWindow || 0} minutes`;
+      document.getElementById('sf-history-max').textContent = data.historyReturnMax ? `${data.historyReturnMax} messages` : 'Default (25 messages)';
+      document.getElementById('sf-history-window').textContent = data.historyReturnWindow ? `${data.historyReturnWindow} minutes` : 'Default (240 minutes)';
     } else {
       // Show disabled info with how-to-enable, hide config card
       configCard.style.display = 'none';

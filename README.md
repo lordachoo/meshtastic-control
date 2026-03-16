@@ -189,6 +189,11 @@ The auto-responder automatically replies to incoming messages based on configura
 }
 ```
 
+### Store & Forward
+
+![Store & Forward Tab](docs/images/meshtastic-dashboard-store-and-forward.png)
+*Store & Forward module status showing configuration and best practices*
+
 ### Beacon System
 
 ![Auto-Beacon Configuration](docs/images/device-management-auto-beacon.png)
