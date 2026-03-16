@@ -2087,53 +2087,54 @@ def get_store_forward_status():
         return jsonify({"error": "Not connected"}), 400
     
     try:
-        sf_config = None
-        debug(f"[STORE&FORWARD] Checking Store & Forward status for session '{session_name}'")
-        debug(f"[STORE&FORWARD] Has localNode: {hasattr(i, 'localNode')}")
+        sf_config = {}
+        debug(f"[S&F:{session_name}] Checking Store & Forward status")
         
-        if hasattr(i, 'localNode') and i.localNode:
-            debug(f"[STORE&FORWARD] Has moduleConfig: {hasattr(i.localNode, 'moduleConfig')}")
-            if hasattr(i.localNode, 'moduleConfig'):
-                # Check for store_forward using protobuf HasField method
-                has_sf = i.localNode.moduleConfig.HasField('store_forward')
-                debug(f"[STORE&FORWARD] Has store_forward field: {has_sf}")
-                
-                if has_sf:
+        if hasattr(i, 'localNode') and i.localNode and hasattr(i.localNode, 'moduleConfig'):
+            # Access store_forward directly (same pattern as /api/device/config)
+            # Don't use HasField - it's unreliable with protobuf3
+            try:
+                sf_raw = i.localNode.moduleConfig.store_forward
+                sf_config = MessageToDict(sf_raw)
+                debug(f"[S&F:{session_name}] Config from MessageToDict: {sf_config}")
+            except Exception as e:
+                debug(f"[S&F:{session_name}] Could not read store_forward config: {e}")
+                sf_config = {}
+            
+            # If MessageToDict returned empty dict, try reading fields directly
+            if not sf_config:
+                try:
                     sf_raw = i.localNode.moduleConfig.store_forward
-                    debug(f"[STORE&FORWARD] Raw protobuf fields: {dir(sf_raw)}")
-                    sf_config = MessageToDict(sf_raw)
-                    debug(f"[STORE&FORWARD] Full config dict: {sf_config}")
-                else:
-                    debug(f"[STORE&FORWARD] store_forward field not set in moduleConfig")
-            else:
-                debug(f"[STORE&FORWARD] moduleConfig not found on localNode")
+                    sf_config = {
+                        "enabled": bool(sf_raw.enabled),
+                        "heartbeat": bool(sf_raw.heartbeat),
+                        "records": int(sf_raw.records),
+                        "historyReturnMax": int(sf_raw.history_return_max),
+                        "historyReturnWindow": int(sf_raw.history_return_window),
+                    }
+                    debug(f"[S&F:{session_name}] Config from direct field access: {sf_config}")
+                except Exception as e:
+                    debug(f"[S&F:{session_name}] Direct field access failed: {e}")
+                    sf_config = {}
         else:
-            debug(f"[STORE&FORWARD] localNode not available")
+            debug(f"[S&F:{session_name}] localNode or moduleConfig not available")
         
-        if not sf_config:
-            result = {
-                "enabled": False,
-                "available": False,
-                "message": "Store & Forward module not available on this device"
-            }
-            debug(f"[STORE&FORWARD] Returning: {result}")
-            return jsonify(result)
-        
-        # Get statistics from the module
+        # Build response - always return config info (even if module is disabled)
+        is_enabled = sf_config.get("enabled", False)
         stats = {
-            "enabled": sf_config.get("enabled", False),
-            "available": True,
+            "available": True,  # Module config exists on all modern firmware
+            "enabled": is_enabled,
             "heartbeat": sf_config.get("heartbeat", False),
             "records": sf_config.get("records", 0),
             "historyReturnMax": sf_config.get("historyReturnMax", 0),
             "historyReturnWindow": sf_config.get("historyReturnWindow", 0),
-            "isServer": sf_config.get("isServer", False)
+            "isServer": sf_config.get("isServer", False),
         }
         
-        debug(f"[STORE&FORWARD] Returning stats: enabled={stats['enabled']}, available={stats['available']}, isServer={stats['isServer']}, records={stats['records']}")
+        debug(f"[S&F:{session_name}] Returning stats: {stats}")
         return jsonify(stats)
     except Exception as e:
-        logger.error(f"Error getting Store & Forward status: {e}")
+        logger.error(f"[S&F:{session_name}] Error getting Store & Forward status: {e}")
         return jsonify({
             "enabled": False,
             "available": False,

@@ -1041,7 +1041,7 @@ body::after {
     <div class="tab" data-tab="messages" onclick="switchTab('messages')">Messages</div>
     <div class="tab" data-tab="traceroute" onclick="switchTab('traceroute')">RF Traceroute</div>
     <div class="tab" data-tab="packets" onclick="switchTab('packets')">Packet Log</div>
-    <div class="tab" data-tab="storeforward" onclick="switchTab('storeforward')" id="tab-storeforward" style="opacity: 0.5;">Store & Forward</div>
+    <div class="tab" data-tab="storeforward" onclick="switchTab('storeforward')" id="sf-tab-btn" style="opacity: 0.5;">Store & Forward</div>
     <div class="tab" data-tab="device" onclick="switchTab('device')">Device Settings</div>
   </div>
 
@@ -1233,23 +1233,24 @@ body::after {
   <div class="tab-content" id="tab-storeforward">
     <div class="section-header">
       <h2>📦 Store & Forward</h2>
-      <p>Monitor message storage and forwarding activity</p>
+      <p>Module status and configuration for this device</p>
     </div>
 
-    <div id="sf-disabled-message" style="display: none; text-align: center; padding: 60px 20px; color: #666;">
-      <div style="font-size: 3em; margin-bottom: 20px;">📦</div>
-      <h3 style="color: #888;">Store & Forward Not Available</h3>
-      <p>This device does not have the Store & Forward module enabled or available.</p>
+    <!-- Not connected message -->
+    <div id="sf-not-connected" style="display: none; text-align: center; padding: 60px 20px; color: #666;">
+      <div style="font-size: 3em; margin-bottom: 20px;">🔌</div>
+      <h3 style="color: #888;">Not Connected</h3>
+      <p>Connect to a device to view Store & Forward status.</p>
     </div>
 
-    <div id="sf-content">
+    <div id="sf-content" style="display: none;">
       <!-- Module Status Card -->
       <div class="card" style="margin-bottom: 20px;">
         <h3>📊 Module Status</h3>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
           <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
             <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Status</div>
-            <div id="sf-status" style="font-size: 1.2em; font-weight: bold; color: var(--accent-green);">Loading...</div>
+            <div id="sf-status" style="font-size: 1.2em; font-weight: bold;">Loading...</div>
           </div>
           <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
             <div style="color: #aaa; font-size: 0.9em; margin-bottom: 5px;">Mode</div>
@@ -1266,8 +1267,8 @@ body::after {
         </div>
       </div>
 
-      <!-- Configuration Card -->
-      <div class="card" style="margin-bottom: 20px;">
+      <!-- Configuration Card (shown when enabled) -->
+      <div id="sf-config-card" class="card" style="margin-bottom: 20px; display: none;">
         <h3>⚙️ Configuration</h3>
         <div style="margin-top: 15px;">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -1280,23 +1281,64 @@ body::after {
               <div id="sf-history-window" style="font-size: 1.1em; padding: 10px; background: #2a2a2a; border-radius: 4px;">-- minutes</div>
             </div>
           </div>
-          <div style="margin-top: 20px; padding: 15px; background: #1a1a1a; border-left: 3px solid var(--accent-blue); border-radius: 4px;">
-            <div style="font-size: 0.9em; color: #aaa; margin-bottom: 5px;">ℹ️ About Store & Forward</div>
-            <div style="font-size: 0.85em; color: #888; line-height: 1.5;">
-              The Store & Forward module allows this device to store messages for offline nodes and forward them when they reconnect to the mesh.
-              This is useful for extending message delivery in areas with intermittent connectivity.
-            </div>
+        </div>
+      </div>
+
+      <!-- Disabled info (shown when disabled) -->
+      <div id="sf-disabled-info" class="card" style="margin-bottom: 20px; display: none;">
+        <h3>🔇 Module Disabled</h3>
+        <div style="margin-top: 15px; padding: 15px; background: #1a1a1a; border-left: 3px solid #666; border-radius: 4px;">
+          <div style="font-size: 0.95em; color: #bbb; line-height: 1.6;">
+            Store & Forward is <strong style="color: var(--accent-red);">disabled</strong> on this device. To enable it:
+          </div>
+          <ol style="margin-top: 10px; padding-left: 20px; color: #aaa; font-size: 0.9em; line-height: 1.8;">
+            <li>Open the <strong>Meshtastic app</strong> (Android/iOS) or the <strong>web client</strong></li>
+            <li>Go to <strong>Module Settings</strong> &rarr; <strong>Store & Forward</strong></li>
+            <li>Toggle <strong>Enabled</strong> to ON</li>
+            <li>Set <strong>Records</strong> (number of messages to store, e.g. 100)</li>
+            <li>Optionally enable <strong>Heartbeat</strong> so clients know you're a S&F server</li>
+            <li>Save and the device will reboot</li>
+          </ol>
+          <div style="margin-top: 12px; font-size: 0.85em; color: #888;">
+            Note: Store & Forward works best on devices with more memory (ESP32-S3, nRF52840). The device acts as a server, storing messages and replaying them to nodes that were temporarily offline.
           </div>
         </div>
       </div>
 
-      <!-- Message Activity Card -->
+      <!-- About Card (always shown) -->
       <div class="card">
-        <h3>📨 Message Activity</h3>
-        <div style="text-align: center; padding: 40px 20px; color: #666;">
-          <div style="font-size: 2em; margin-bottom: 10px;">📭</div>
-          <div style="color: #888;">No message activity data available yet</div>
-          <div style="font-size: 0.85em; color: #666; margin-top: 5px;">Message storage and forwarding statistics will appear here</div>
+        <h3>ℹ️ About Store & Forward</h3>
+        <div style="margin-top: 15px;">
+          <div style="padding: 15px; background: #1a1a1a; border-left: 3px solid var(--accent-blue); border-radius: 4px; margin-bottom: 15px;">
+            <div style="font-size: 0.95em; color: #bbb; line-height: 1.6;">
+              The Store & Forward module allows a device to act as a <strong>message relay server</strong> for your mesh network.
+              When enabled, it stores text messages and replays them to nodes that were offline when the messages were sent.
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+              <div style="color: var(--accent-green); font-weight: bold; margin-bottom: 8px;">How It Works</div>
+              <ul style="margin: 0; padding-left: 16px; color: #aaa; font-size: 0.85em; line-height: 1.7;">
+                <li>Server node stores recent text messages in memory</li>
+                <li>When a client node comes back online, it requests missed messages</li>
+                <li>Server replays stored messages to the requesting client</li>
+                <li>Heartbeat broadcasts let clients know a S&F server is available</li>
+              </ul>
+            </div>
+            <div style="background: #2a2a2a; padding: 15px; border-radius: 6px;">
+              <div style="color: var(--accent-blue); font-weight: bold; margin-bottom: 8px;">Best Practices</div>
+              <ul style="margin: 0; padding-left: 16px; color: #aaa; font-size: 0.85em; line-height: 1.7;">
+                <li>Use a device with ample memory (ESP32-S3, nRF52840)</li>
+                <li>Keep the server node powered on and in a central location</li>
+                <li>Set records to match your expected message volume</li>
+                <li>Enable heartbeat so clients auto-discover the server</li>
+              </ul>
+            </div>
+          </div>
+          <div style="margin-top: 15px; padding: 12px; background: #2a2a2a; border-radius: 6px; font-size: 0.85em; color: #888;">
+            <strong style="color: #aaa;">Limitations:</strong> Only TEXT_MESSAGE_APP messages are stored. Position, telemetry, and other packet types are not cached. 
+            The Meshtastic API does not expose runtime S&F statistics (messages stored, forwarded, etc.) — only the module configuration is available here.
+          </div>
         </div>
       </div>
     </div>
@@ -3563,73 +3605,99 @@ function escapeHtml(text) {
 // ── Store & Forward ────────────────────────────────────────────────────
 
 async function checkStoreForwardAvailability() {
-  // Check if Store & Forward is available and enable/disable tab accordingly
+  // Always allow clicking the tab - it shows useful info regardless of S&F state
+  const tabEl = document.getElementById('sf-tab-btn');
+  const activeSession = getActiveSession();
+  
+  if (!activeSession) {
+    tabEl.style.opacity = '0.5';
+    return;
+  }
+  
   try {
-    const activeSession = getActiveSession();
-    const url = activeSession ? `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}` : '/api/store-forward/status';
+    const url = `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}`;
     const res = await fetch(url);
     const data = await res.json();
     
-    const tabEl = document.getElementById('tab-storeforward');
-    
-    if (!data.available || !data.enabled) {
-      // Module not available - gray out tab
+    if (data.error) {
       tabEl.style.opacity = '0.5';
-      tabEl.style.cursor = 'not-allowed';
     } else {
-      // Module available - enable tab
-      tabEl.style.opacity = '1';
+      // Tab is always accessible - show enabled state via color hint
+      tabEl.style.opacity = data.enabled ? '1' : '0.7';
       tabEl.style.cursor = 'pointer';
     }
   } catch (e) {
     console.error('Error checking Store & Forward availability:', e);
-    document.getElementById('tab-storeforward').style.opacity = '0.5';
+    tabEl.style.opacity = '0.5';
   }
 }
 
 async function loadStoreForwardStatus() {
+  const notConnected = document.getElementById('sf-not-connected');
+  const content = document.getElementById('sf-content');
+  const configCard = document.getElementById('sf-config-card');
+  const disabledInfo = document.getElementById('sf-disabled-info');
+  const tabEl = document.getElementById('sf-tab-btn');
+  
+  const activeSession = getActiveSession();
+  if (!activeSession) {
+    notConnected.style.display = 'block';
+    content.style.display = 'none';
+    return;
+  }
+  
   try {
-    const activeSession = getActiveSession();
-    const url = activeSession ? `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}` : '/api/store-forward/status';
+    const url = `/api/store-forward/status?session_name=${encodeURIComponent(activeSession)}`;
     const res = await fetch(url);
     const data = await res.json();
     
-    console.log('[STORE&FORWARD] API response:', data);
+    console.log('[S&F] API response:', data);
     
-    const tabEl = document.getElementById('tab-storeforward');
-    const disabledMsg = document.getElementById('sf-disabled-message');
-    const content = document.getElementById('sf-content');
-    
-    console.log('[STORE&FORWARD] Elements found:', {tabEl: !!tabEl, disabledMsg: !!disabledMsg, content: !!content});
-    console.log('[STORE&FORWARD] Checking: available=' + data.available + ', enabled=' + data.enabled);
-    
-    if (!data.available || !data.enabled) {
-      // Module not available or disabled - gray out tab and show message
-      tabEl.style.opacity = '0.5';
-      tabEl.style.cursor = 'not-allowed';
-      disabledMsg.style.display = 'block';
+    if (data.error) {
+      notConnected.style.display = 'block';
       content.style.display = 'none';
-    } else {
-      // Module enabled - show content and update values
-      tabEl.style.opacity = '1';
-      tabEl.style.cursor = 'pointer';
-      disabledMsg.style.display = 'none';
-      content.style.display = 'block';
+      return;
+    }
+    
+    // Always show content
+    notConnected.style.display = 'none';
+    content.style.display = 'block';
+    
+    // Update status indicators
+    const isEnabled = data.enabled;
+    document.getElementById('sf-status').textContent = isEnabled ? 'Enabled' : 'Disabled';
+    document.getElementById('sf-status').style.color = isEnabled ? 'var(--accent-green)' : 'var(--accent-red)';
+    
+    document.getElementById('sf-mode').textContent = isEnabled ? (data.isServer ? 'Server' : 'Client') : '--';
+    document.getElementById('sf-mode').style.color = isEnabled ? '#fff' : '#666';
+    
+    document.getElementById('sf-records').textContent = data.records || '0';
+    document.getElementById('sf-records').style.color = isEnabled && data.records > 0 ? 'var(--accent-blue)' : '#666';
+    
+    const hbEnabled = data.heartbeat;
+    document.getElementById('sf-heartbeat').textContent = hbEnabled ? 'Enabled' : 'Disabled';
+    document.getElementById('sf-heartbeat').style.color = hbEnabled ? 'var(--accent-green)' : '#666';
+    
+    // Tab appearance
+    tabEl.style.opacity = isEnabled ? '1' : '0.7';
+    tabEl.style.cursor = 'pointer';
+    
+    if (isEnabled) {
+      // Show config card, hide disabled info
+      configCard.style.display = 'block';
+      disabledInfo.style.display = 'none';
       
-      // Update status display
-      document.getElementById('sf-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
-      document.getElementById('sf-status').style.color = data.enabled ? 'var(--accent-green)' : 'var(--accent-red)';
-      
-      document.getElementById('sf-mode').textContent = data.isServer ? 'Server' : 'Client';
-      document.getElementById('sf-records').textContent = data.records || 0;
-      document.getElementById('sf-heartbeat').textContent = data.heartbeat ? 'Enabled' : 'Disabled';
       document.getElementById('sf-history-max').textContent = `${data.historyReturnMax || 0} messages`;
       document.getElementById('sf-history-window').textContent = `${data.historyReturnWindow || 0} minutes`;
+    } else {
+      // Show disabled info with how-to-enable, hide config card
+      configCard.style.display = 'none';
+      disabledInfo.style.display = 'block';
     }
   } catch (e) {
     console.error('Error loading Store & Forward status:', e);
-    // On error, gray out the tab
-    document.getElementById('tab-storeforward').style.opacity = '0.5';
+    notConnected.style.display = 'block';
+    content.style.display = 'none';
   }
 }
 
