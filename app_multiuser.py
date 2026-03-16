@@ -596,8 +596,10 @@ def save_beacon_config():
 def substitute_beacon_variables(template, session_data):
     """Replace variables in beacon template with actual values."""
     i = session_data["iface"]
+    session_short = getattr(i, "_session_id", "unknown")[:8] if i else "unknown"
+    
     if not i:
-        logger.warning("[BEACON] No interface available for beacon substitution")
+        logger.warning(f"[BEACON:{session_short}] No interface available for beacon substitution")
         return template
     
     # Initialize defaults
@@ -618,7 +620,7 @@ def substitute_beacon_variables(template, session_data):
             my_node_num = i.myInfo.my_node_num
         
         if not my_node_num:
-            logger.warning("[BEACON] myInfo.my_node_num not available")
+            logger.warning(f"[BEACON:{session_short}] myInfo.my_node_num not available")
         
         # Try multiple methods to get node data
         node = None
@@ -626,13 +628,13 @@ def substitute_beacon_variables(template, session_data):
             # Method 1: Try nodesByNum
             if hasattr(i, 'nodesByNum') and my_node_num in i.nodesByNum:
                 node = i.nodesByNum[my_node_num]
-                logger.debug(f"[BEACON] Got node from nodesByNum: {my_node_num}")
+                logger.debug(f"[BEACON:{session_short}] Got node from nodesByNum: {my_node_num}")
             # Method 2: Try nodes dict if nodesByNum failed
             elif hasattr(i, 'nodes') and i.nodes:
                 for node_id, node_data in i.nodes.items():
                     if node_data.get('num') == my_node_num:
                         node = node_data
-                        logger.debug(f"[BEACON] Got node from nodes dict: {node_id}")
+                        logger.debug(f"[BEACON:{session_short}] Got node from nodes dict: {node_id}")
                         break
         
         if node:
@@ -669,15 +671,15 @@ def substitute_beacon_variables(template, session_data):
                 if alt_raw:
                     alt = str(int(alt_raw))
         else:
-            logger.warning(f"[BEACON] Could not find node data for my_node_num={my_node_num}")
+            logger.warning(f"[BEACON:{session_short}] Could not find node data for my_node_num={my_node_num}")
             # Log diagnostic info
             if hasattr(i, 'nodesByNum'):
-                logger.warning(f"[BEACON] nodesByNum has {len(i.nodesByNum)} nodes: {list(i.nodesByNum.keys())}")
+                logger.warning(f"[BEACON:{session_short}] nodesByNum has {len(i.nodesByNum)} nodes: {list(i.nodesByNum.keys())}")
             if hasattr(i, 'nodes'):
-                logger.warning(f"[BEACON] nodes dict has {len(i.nodes) if i.nodes else 0} nodes")
+                logger.warning(f"[BEACON:{session_short}] nodes dict has {len(i.nodes) if i.nodes else 0} nodes")
                 
     except Exception as e:
-        logger.error(f"[BEACON] Error getting beacon metrics: {e}", exc_info=True)
+        logger.error(f"[BEACON:{session_short}] Error getting beacon metrics: {e}", exc_info=True)
     
     # Variable substitutions
     variables = {
@@ -697,54 +699,55 @@ def substitute_beacon_variables(template, session_data):
     for var, value in variables.items():
         result = result.replace(var, str(value))
     
-    logger.info(f"[BEACON] Substituted beacon: {result}")
+    logger.info(f"[BEACON:{session_short}] Substituted beacon: {result}")
     return result
 
 
 def beacon_loop(session_id):
     """Background thread that sends beacon messages at configured intervals."""
-    debug(f"[BEACON] Beacon thread started for session {session_id[:8]}")
-    logger.info(f"Beacon thread started for session {session_id[:8]}")
+    session_short = session_id[:8]
+    debug(f"[BEACON:{session_short}] Beacon thread started")
+    logger.info(f"[{session_short}] Beacon thread started")
     
     while True:
         try:
             # Check if beacon is still enabled
             if not beacon_config.get("enabled", False):
-                logger.info(f"Beacon disabled, stopping thread for session {session_id[:8]}")
+                logger.info(f"[{session_short}] Beacon disabled, stopping thread")
                 break
             
             # Get session data
             with sessions_lock:
                 if session_id not in sessions:
-                    logger.info(f"Session {session_id[:8]} no longer exists, stopping beacon")
+                    logger.info(f"[{session_short}] Session no longer exists, stopping beacon")
                     break
                 session_data = sessions[session_id]
             
             # Check if interface is still connected
             if not session_data["iface"]:
-                logger.info(f"Interface disconnected for session {session_id[:8]}, stopping beacon")
+                logger.info(f"[{session_short}] Interface disconnected, stopping beacon")
                 break
             
             # Sleep FIRST, then send beacon (prevents spam on reconnect)
             interval_minutes = beacon_config.get("interval_minutes", 60)
             sleep_seconds = interval_minutes * 60
             
-            debug(f"[BEACON] Sleeping for {interval_minutes} minutes before sending beacon")
-            logger.info(f"Beacon thread sleeping for {interval_minutes} minutes ({sleep_seconds}s) for session {session_id[:8]}")
+            debug(f"[BEACON:{session_short}] Sleeping for {interval_minutes} minutes before sending beacon")
+            logger.info(f"[{session_short}] Beacon thread sleeping for {interval_minutes} minutes ({sleep_seconds}s)")
             
             # Sleep in small chunks to allow for quick shutdown
             # Log countdown every 60 seconds
             for i in range(sleep_seconds):
                 if not beacon_config.get("enabled", False):
-                    logger.info(f"Beacon disabled during sleep, exiting thread for session {session_id[:8]}")
+                    logger.info(f"[{session_short}] Beacon disabled during sleep, exiting thread")
                     break
                 
                 # Log countdown every minute
                 remaining = sleep_seconds - i
                 if remaining % 60 == 0 and remaining > 0:
                     mins_remaining = remaining // 60
-                    debug(f"[BEACON] Countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
-                    logger.info(f"Beacon countdown: {mins_remaining} minute(s) until next beacon (session {session_id[:8]})")
+                    debug(f"[BEACON:{session_short}] Countdown: {mins_remaining} minute(s) until next beacon")
+                    logger.info(f"[{session_short}] Beacon countdown: {mins_remaining} minute(s) until next beacon")
                 
                 time.sleep(1)
             
@@ -754,7 +757,7 @@ def beacon_loop(session_id):
                 
             # Check if interface still connected after sleep
             if not session_data["iface"]:
-                logger.info(f"Interface disconnected during sleep for session {session_id[:8]}, stopping beacon")
+                logger.info(f"[{session_short}] Interface disconnected during sleep, stopping beacon")
                 break
             
             # NOW send beacon message after the wait
@@ -762,20 +765,20 @@ def beacon_loop(session_id):
             if template:
                 # Refresh node database before sending beacon to get fresh metrics
                 try:
-                    logger.info(f"[BEACON] Requesting fresh node info for session {session_id[:8]}")
+                    logger.info(f"[{session_short}] [BEACON] Requesting fresh node info")
                     session_data["iface"].getNode('^local', requestChannelAttempts=1)
                     # Give it a moment to update
                     time.sleep(0.5)
                 except Exception as e:
-                    logger.warning(f"[BEACON] Could not refresh node info: {e}")
+                    logger.warning(f"[{session_short}] [BEACON] Could not refresh node info: {e}")
                 
                 message = substitute_beacon_variables(template, session_data)
                 channel = beacon_config.get("channel", 0)
                 
                 try:
                     session_data["iface"].sendText(message, channelIndex=channel)
-                    debug(f"[BEACON] Sent beacon from session {session_id[:8]}: {message}")
-                    logger.info(f"Beacon sent from session {session_id[:8]}: {message}")
+                    debug(f"[BEACON:{session_short}] Sent beacon: {message}")
+                    logger.info(f"[{session_short}] Beacon sent: {message}")
                     
                     # Add to packet log
                     my_node = get_my_node(session_data)
@@ -818,42 +821,43 @@ def beacon_loop(session_id):
                     save_beacon_config()
                     
                 except Exception as e:
-                    logger.error(f"Error sending beacon: {e}")
+                    logger.error(f"[{session_short}] Error sending beacon: {e}")
                 
         except Exception as e:
-            logger.error(f"Error in beacon loop: {e}")
+            logger.error(f"[{session_short}] Error in beacon loop: {e}")
             break
     
     # Clean up
     with sessions_lock:
         if session_id in beacon_threads:
             del beacon_threads[session_id]
-    logger.info(f"Beacon thread stopped for session {session_id[:8]}")
+    logger.info(f"[{session_short}] Beacon thread stopped")
 
 
 def start_beacon(session_id):
     """Start beacon thread for a session."""
     global beacon_threads
+    session_short = session_id[:8]
     
-    debug(f"[BEACON] start_beacon() called for session {session_id[:8]}")
+    debug(f"[BEACON:{session_short}] start_beacon() called")
     
     # Stop existing beacon if running
     stop_beacon(session_id)
     
     # Start new beacon thread
-    debug(f"[BEACON] Creating and starting beacon thread...")
+    debug(f"[BEACON:{session_short}] Creating and starting beacon thread...")
     thread = threading.Thread(target=beacon_loop, args=(session_id,), daemon=True)
     thread.start()
     beacon_threads[session_id] = thread
-    debug(f"[BEACON] Started beacon thread for session {session_id[:8]}")
-    logger.info(f"Started beacon for session {session_id[:8]}")
+    debug(f"[BEACON:{session_short}] Started beacon thread")
+    logger.info(f"[{session_short}] Started beacon")
 
 
 def stop_beacon(session_id):
     """Stop beacon thread for a session."""
     if session_id in beacon_threads:
         # Thread will stop itself when it checks enabled flag
-        logger.info(f"Stopping beacon for session {session_id[:8]}")
+        logger.info(f"[{session_id[:8]}] Stopping beacon")
         # Thread is daemon and will check enabled flag on next iteration
 
 
@@ -921,16 +925,19 @@ def substitute_variables(response_text, from_id, to_id, message_text, my_node, s
 
 def check_autoresponder(message_text, from_id, to_id, session_data, packet=None):
     """Check if message should trigger an auto-response."""
-    debug(f"[AUTO-RESPONDER] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
+    # Get session_id for logging
+    session_id = getattr(session_data.get("iface"), "_session_id", "unknown")[:8] if session_data.get("iface") else "unknown"
+    
+    debug(f"[AUTO-RESPONDER:{session_id}] check_autoresponder() called: enabled={autoresponder_config.get('enabled')}, rules={len(autoresponder_config.get('rules', []))}")
     
     if not autoresponder_config.get("enabled", False):
-        debug("[AUTO-RESPONDER] Auto-responder is disabled.")
+        debug(f"[AUTO-RESPONDER:{session_id}] Auto-responder is disabled.")
         return None
 
     # Don't respond to messages from unknown/invalid senders
     if not from_id or from_id == "None" or from_id == "?" or from_id == "":
-        debug(f"[AUTO-RESPONDER] ✗ Message from unknown/invalid sender ({from_id}), skipping")
-        logger.info(f"Message from unknown/invalid sender ({from_id}), skipping auto-responder")
+        debug(f"[AUTO-RESPONDER:{session_id}] ✗ Message from unknown/invalid sender ({from_id}), skipping")
+        logger.info(f"[{session_id}] Message from unknown/invalid sender ({from_id}), skipping auto-responder")
         return None
 
     # Get my own node ID for filtering
@@ -939,17 +946,17 @@ def check_autoresponder(message_text, from_id, to_id, session_data, packet=None)
 
     # Don't respond to self
     if from_id == my_id:
-        debug(f"[AUTO-RESPONDER] ✗ Message from self ({from_id}), skipping")
-        logger.info(f"Message from self ({from_id}), skipping auto-responder")
+        debug(f"[AUTO-RESPONDER:{session_id}] ✗ Message from self ({from_id}), skipping")
+        logger.info(f"[{session_id}] Message from self ({from_id}), skipping auto-responder")
         return None
     
     # Skip null or empty messages
     if not message_text or message_text.strip() == "":
-        logger.info(f"Empty message, skipping auto-responder")
+        logger.info(f"[{session_id}] Empty message, skipping auto-responder")
         return None
     
-    debug(f"[AUTO-RESPONDER] Processing message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
-    logger.info(f"Auto-responder checking message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
+    debug(f"[AUTO-RESPONDER:{session_id}] Processing message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
+    logger.info(f"[{session_id}] Auto-responder checking message '{message_text}' from {from_id} (my_node={my_node['id'] if my_node else 'None'})")
     
     is_broadcast = to_id == "^all"
     message_lower = message_text.lower().strip()
@@ -960,37 +967,37 @@ def check_autoresponder(message_text, from_id, to_id, session_data, packet=None)
         has_rf_metrics = packet.get("rxSnr") is not None or packet.get("rxRssi") is not None
         message_source = "rf" if has_rf_metrics else "mqtt"
     
-    debug(f"[AUTO-RESPONDER] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}' (source={message_source})")
+    debug(f"[AUTO-RESPONDER:{session_id}] Checking {len(autoresponder_config.get('rules', []))} rules against message '{message_lower}' (source={message_source})")
     
     for rule in autoresponder_config.get("rules", []):
         rule_id = rule.get("id", "unknown")
         
         if not rule.get("enabled", False):
-            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' is disabled, skipping")
-            logger.info(f"Rule '{rule_id}' is disabled, skipping")
+            debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}' is disabled, skipping")
+            logger.info(f"[{session_id}] Rule '{rule_id}' is disabled, skipping")
             continue
         
         # Check message type filter
         msg_type = rule.get("messageType", "both")
         if msg_type == "broadcast" and not is_broadcast:
-            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires broadcast, message is direct, skipping")
-            logger.info(f"Rule '{rule_id}' requires broadcast, message is direct, skipping")
+            debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}' requires broadcast, message is direct, skipping")
+            logger.info(f"[{session_id}] Rule '{rule_id}' requires broadcast, message is direct, skipping")
             continue
         if msg_type == "direct" and is_broadcast:
-            debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires direct, message is broadcast, skipping")
-            logger.info(f"Rule '{rule_id}' requires direct, message is broadcast, skipping")
+            debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}' requires direct, message is broadcast, skipping")
+            logger.info(f"[{session_id}] Rule '{rule_id}' requires direct, message is broadcast, skipping")
             continue
         
         # Check source type filter (MQTT/RF)
         source_type = rule.get("sourceType", "both")
         if message_source and source_type != "both":
             if source_type == "mqtt" and message_source != "mqtt":
-                debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires MQTT, message is RF, skipping")
-                logger.info(f"Rule '{rule_id}' requires MQTT, message is RF, skipping")
+                debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}' requires MQTT, message is RF, skipping")
+                logger.info(f"[{session_id}] Rule '{rule_id}' requires MQTT, message is RF, skipping")
                 continue
             if source_type == "rf" and message_source != "rf":
-                debug(f"[AUTO-RESPONDER] Rule '{rule_id}' requires RF, message is MQTT, skipping")
-                logger.info(f"Rule '{rule_id}' requires RF, message is MQTT, skipping")
+                debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}' requires RF, message is MQTT, skipping")
+                logger.info(f"[{session_id}] Rule '{rule_id}' requires RF, message is MQTT, skipping")
                 continue
         
         # Check trigger
@@ -1005,15 +1012,15 @@ def check_autoresponder(message_text, from_id, to_id, session_data, packet=None)
         elif trigger_type == "startswith":
             matched = message_lower.startswith(trigger)
         
-        debug(f"[AUTO-RESPONDER] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, matched={matched}")
-        logger.info(f"Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, message='{message_lower}', matched={matched}")
+        debug(f"[AUTO-RESPONDER:{session_id}] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, matched={matched}")
+        logger.info(f"[{session_id}] Rule '{rule_id}': trigger='{trigger}', type={trigger_type}, message='{message_lower}', matched={matched}")
         
         if not matched:
             continue
         
         # Rule matched - send response immediately
-        debug(f"[AUTO-RESPONDER] ✓ Rule '{rule_id}' matched! Sending response...")
-        logger.info(f"Rule '{rule_id}' matched! Sending response...")
+        debug(f"[AUTO-RESPONDER:{session_id}] ✓ Rule '{rule_id}' matched! Sending response...")
+        logger.info(f"[{session_id}] Rule '{rule_id}' matched! Sending response...")
         
         # Get response and substitute variables
         response = rule.get("response", "Auto-reply")
@@ -1106,17 +1113,19 @@ def get_my_node(session_data):
 def on_receive(packet, interface):
     """Called on every received packet - routes to correct session."""
     try:
+        # Get session_id from interface first for logging
+        session_id = getattr(interface, '_session_id', None)
+        session_short = session_id[:8] if session_id else "unknown"
+        
         # Log every packet that arrives
         from_id = packet.get('fromId', '?')
         portnum = packet.get('decoded', {}).get('portnum', 'UNKNOWN')
         has_rf = packet.get('rxSnr') is not None or packet.get('rxRssi') is not None
         source = "RF" if has_rf else "MQTT"
-        debug(f"[PACKET] on_receive() called! packet keys: {list(packet.keys())}")
-        debug(f"[PACKET] {source} packet from {from_id}, port={portnum}, channel={packet.get('channel', 'N/A')}")
-        logger.info(f"on_receive: {source} packet from {from_id}, port={portnum}")
+        debug(f"[PACKET:{session_short}] on_receive() called! packet keys: {list(packet.keys())}")
+        debug(f"[PACKET:{session_short}] {source} packet from {from_id}, port={portnum}, channel={packet.get('channel', 'N/A')}")
+        logger.info(f"[{session_short}] on_receive: {source} packet from {from_id}, port={portnum}")
         
-        # Get session_id from interface
-        session_id = getattr(interface, '_session_id', None)
         if not session_id:
             logger.warning(f"Packet received but no session_id on interface (id={id(interface)}): {packet.get('fromId', '?')}")
             return  # No session associated with this interface
@@ -1174,13 +1183,13 @@ def on_receive(packet, interface):
             from_id = packet.get("fromId", "?")
             to_id = packet.get("toId", "?")
             channel = packet.get("channel", 0)  # Get channel from incoming packet
-            debug(f"[AUTO-RESPONDER] Checking message: '{text}' from={from_id} to={to_id} channel={channel}")
-            logger.info(f"Checking auto-responder for text='{text}' from={from_id} to={to_id}")
+            debug(f"[AUTO-RESPONDER:{session_short}] Checking message: '{text}' from={from_id} to={to_id} channel={channel}")
+            logger.info(f"[{session_short}] Checking auto-responder for text='{text}' from={from_id} to={to_id}")
             auto_response = check_autoresponder(text, from_id, to_id, session_data, packet)
             
             if auto_response:
-                debug(f"[AUTO-RESPONDER] ✓ Sending response: '{auto_response}' to {from_id} on channel {channel}")
-                logger.info(f"Auto-responding to '{text}' from {from_id} with '{auto_response}'")
+                debug(f"[AUTO-RESPONDER:{session_short}] ✓ Sending response: '{auto_response}' to {from_id} on channel {channel}")
+                logger.info(f"[{session_short}] Auto-responding to '{text}' from {from_id} with '{auto_response}'")
                 
                 # Use same pattern as /api/send - no threading, direct call
                 try:
@@ -1188,15 +1197,15 @@ def on_receive(packet, interface):
                     if to_id == "^all":
                         dest = None  # Broadcast
                         dest_id = "^all"
-                        debug(f"[AUTO-RESPONDER] Sending '{auto_response}' to BROADCAST")
+                        debug(f"[AUTO-RESPONDER:{session_short}] Sending '{auto_response}' to BROADCAST")
                         session_data["iface"].sendText(auto_response, channelIndex=channel)
                     else:
                         dest = hex_to_int(from_id)  # Direct to sender
                         dest_id = from_id
-                        debug(f"[AUTO-RESPONDER] Sending '{auto_response}' to {dest_id}")
+                        debug(f"[AUTO-RESPONDER:{session_short}] Sending '{auto_response}' to {dest_id}")
                         session_data["iface"].sendText(auto_response, destinationId=dest, channelIndex=channel)
                     
-                    debug(f"[AUTO-RESPONDER] ✓ sendText() completed")
+                    debug(f"[AUTO-RESPONDER:{session_short}] ✓ sendText() completed")
                     
                     # Add auto-response to packet log (same as /api/send)
                     my_node = get_my_node(session_data)
@@ -1222,7 +1231,7 @@ def on_receive(packet, interface):
                         if len(session_data["packet_log"]) > PACKET_LOG_MAX:
                             session_data["packet_log"].pop(0)
                     
-                    debug(f"[AUTO-RESPONDER] ✓ Added to packet_log")
+                    debug(f"[AUTO-RESPONDER:{session_short}] ✓ Added to packet_log")
                     
                     # Save to database
                     session_name = None
@@ -1234,11 +1243,11 @@ def on_receive(packet, interface):
                     
                     if session_name:
                         save_message_to_db(session_name, auto_response_entry)
-                        debug(f"[AUTO-RESPONDER] ✓ Saved to database")
+                        debug(f"[AUTO-RESPONDER:{session_short}] ✓ Saved to database")
                     
                 except Exception as e:
-                    debug(f"[AUTO-RESPONDER] ✗ Error: {type(e).__name__}: {e}")
-                    logger.error(f"Auto-responder send failed: {e}")
+                    debug(f"[AUTO-RESPONDER:{session_short}] ✗ Error: {type(e).__name__}: {e}")
+                    logger.error(f"[{session_short}] Auto-responder send failed: {e}")
         
         # Process traceroute responses
         if decoded.get("portnum") == "TRACEROUTE_APP":
