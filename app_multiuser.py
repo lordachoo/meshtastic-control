@@ -117,11 +117,14 @@ def init_database():
         
         conn.commit()
         conn.close()
-        logger.info("Database initialized successfully")
+        logger.info(f"Database initialized successfully for all sessions")
 
 def save_message_to_db(session_name, message_data):
     """Save a message to the database."""
     try:
+        if not session_name:
+            return
+        
         with db_lock:
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
@@ -149,14 +152,14 @@ def save_message_to_db(session_name, message_data):
             
             conn.commit()
             conn.close()
-            debug(f"[DB] Saved message to database for session '{session_name}'")
+            debug(f"[DB:{session_name}] Saved message to database")
     except Exception as e:
-        logger.error(f"Error saving message to database: {e}")
+        logger.error(f"Error saving message to database for session {session_name}: {e}")
 
 def load_messages_from_db(session_name, limit=500, since=None):
     """Load messages from database for a session."""
     try:
-        debug(f"[DB] Loading messages for session '{session_name}', limit={limit}, since={since}")
+        debug(f"[DB:{session_name}] Loading messages, limit={limit}, since={since}")
         with db_lock:
             conn = sqlite3.connect(DB_FILE)
             conn.row_factory = sqlite3.Row
@@ -180,7 +183,7 @@ def load_messages_from_db(session_name, limit=500, since=None):
             rows = cursor.fetchall()
             conn.close()
             
-            debug(f"[DB] Found {len(rows)} messages in database")
+            debug(f"[DB:{session_name}] Found {len(rows)} messages in database")
             
             # Convert to list of dicts
             messages = []
@@ -202,12 +205,12 @@ def load_messages_from_db(session_name, limit=500, since=None):
             
             # Reverse to get chronological order (oldest first)
             messages.reverse()
-            debug(f"[DB] Returning {len(messages)} messages")
+            debug(f"[DB:{session_name}] Returning {len(messages)} messages")
             return messages
             
     except Exception as e:
         logger.error(f"Error loading messages from database: {e}")
-        debug(f"[DB] Error loading messages: {e}")
+        debug(f"[DB:{session_name}] Error loading messages: {e}")
         return []
 
 # ── Session-Based State ────────────────────────────────────────────────────
@@ -1796,17 +1799,17 @@ def messages():
     if not session_name:
         return jsonify([])
     
-    debug(f"[API] /api/messages called with session_name='{session_name}', since={since}")
+    debug(f"[API:{session_name}] /api/messages called, since={since}")
     
     if since:
         # Polling mode: return only NEW messages since timestamp
         db_messages = load_messages_from_db(session_name, limit=500, since=since)
-        debug(f"[API] Returning {len(db_messages)} NEW messages since {since}")
+        debug(f"[API:{session_name}] Returning {len(db_messages)} NEW messages since {since}")
         return jsonify(db_messages)
     else:
         # Initial load: return ALL messages from database
         db_messages = load_messages_from_db(session_name, limit=500, since=None)
-        debug(f"[API] Returning {len(db_messages)} total messages")
+        debug(f"[API:{session_name}] Returning {len(db_messages)} total messages")
         return jsonify(db_messages)
 
 
@@ -1817,7 +1820,7 @@ def packets():
     session_data = get_session_data(session_name)
     since = request.args.get("since")
     
-    debug(f"[API] /api/packets called with session_name='{session_name}', since={since}")
+    debug(f"[API:{session_name}] /api/packets called, since={since}")
     
     # Load text messages from database (persistent storage)
     # Then merge with in-memory packet_log (which has all packet types)
@@ -1826,11 +1829,11 @@ def packets():
             # Polling mode: return only NEW packets since timestamp
             # Load new text messages from database
             db_text_messages = load_messages_from_db(session_name, limit=500, since=since)
-            debug(f"[API] Polling mode: Loaded {len(db_text_messages)} NEW text messages from database since {since}")
+            debug(f"[API:{session_name}] Polling mode: Loaded {len(db_text_messages)} NEW text messages from database since {since}")
             
             # Get new in-memory packets
             in_memory = [p for p in session_data["packet_log"] if p["time"] > since]
-            debug(f"[API] Polling mode: {len(in_memory)} NEW in-memory packets since {since}")
+            debug(f"[API:{session_name}] Polling mode: {len(in_memory)} NEW in-memory packets since {since}")
             
             # Merge and deduplicate
             all_packets = db_text_messages + in_memory
@@ -1843,16 +1846,16 @@ def packets():
                     unique_packets.append(pkt)
             
             unique_packets.sort(key=lambda x: x["time"])
-            debug(f"[API] Returning {len(unique_packets)} NEW packets")
+            debug(f"[API:{session_name}] Returning {len(unique_packets)} NEW packets")
             return jsonify(unique_packets)
         else:
             # Initial load: return ALL text messages from database + recent in-memory packets
             db_text_messages = load_messages_from_db(session_name, limit=500, since=None)
-            debug(f"[API] Initial load: Loaded {len(db_text_messages)} text messages from database")
+            debug(f"[API:{session_name}] Initial load: Loaded {len(db_text_messages)} text messages from database")
             
             # Get all in-memory packets
             in_memory = session_data["packet_log"]
-            debug(f"[API] Initial load: {len(in_memory)} in-memory packets")
+            debug(f"[API:{session_name}] Initial load: {len(in_memory)} in-memory packets")
             
             # Separate text messages from other packets to ensure text messages are always included
             in_memory_text = [p for p in in_memory if p.get("portnum") == "TEXT_MESSAGE_APP"]
@@ -1876,17 +1879,17 @@ def packets():
             result.sort(key=lambda x: x["time"])
             result = result[-100:]  # Last 100 total
             
-            debug(f"[API] Returning {len(result)} total packets ({len([p for p in result if p.get('portnum')=='TEXT_MESSAGE_APP'])} text messages)")
+            debug(f"[API:{session_name}] Returning {len(result)} total packets ({len([p for p in result if p.get('portnum')=='TEXT_MESSAGE_APP'])} text messages)")
             return jsonify(result)
     
     # Fallback to in-memory only (no session_name)
-    debug(f"[API] Falling back to in-memory only (no session_name)")
+    debug(f"[API:none] Falling back to in-memory only (no session_name)")
     if since:
         filtered = [p for p in session_data["packet_log"] if p["time"] > since]
-        debug(f"[API] Returning {len(filtered)} filtered in-memory packets")
+        debug(f"[API:none] Returning {len(filtered)} filtered in-memory packets")
         return jsonify(filtered)
     result = session_data["packet_log"][-100:]
-    debug(f"[API] Returning {len(result)} in-memory packets")
+    debug(f"[API:none] Returning {len(result)} in-memory packets")
     return jsonify(result)
 
 
