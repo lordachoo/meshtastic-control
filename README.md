@@ -32,7 +32,10 @@ Connects to your Meshtastic device over TCP (WiFi) and provides:
 
 ```bash
 # Install dependencies
-pip install meshtastic flask pypubsub protobuf
+pip install meshtastic flask pypubsub protobuf watchdog
+
+# OR install from requirements.txt
+pip install -r requirements.txt
 
 # Run the single-user dashboard
 python app.py
@@ -124,7 +127,7 @@ The sweep feature automatically sends traceroutes to all non-MQTT nodes (and any
 ![Auto-Responder Configuration](docs/images/device-management-auto-responder.png)
 *Auto-responder rule configuration interface*
 
-The auto-responder automatically replies to incoming messages based on configurable rules.
+The auto-responder automatically replies to incoming messages based on configurable rules with advanced filtering options.
 
 **How It Works:**
 1. Every incoming TEXT_MESSAGE_APP packet is checked against active rules
@@ -133,28 +136,56 @@ The auto-responder automatically replies to incoming messages based on configura
    - **Contains** - Message must contain trigger text anywhere (case-insensitive, matches substrings)
    - **Starts With** - Message must start with trigger text (case-insensitive)
 3. Each rule has a cooldown period to prevent spam (default: 60-300 seconds)
-4. Responses support variable substitution: `{sender_name}`, `{sender_short}`, `{sender_id}`, `{my_name}`, `{my_id}`, `{message}`, `{message_type}`
-5. Rules can be filtered by message type (broadcast, direct, or both)
+4. Responses support variable substitution: `{sender_name}`, `{sender_short}`, `{sender_id}`, `{my_name}`, `{my_id}`, `{message}`, `{message_type}`, `{source_type}`
+5. Rules can be filtered by:
+   - **Message type** - broadcast, direct, or both
+   - **Source type** - MQTT, RF, or both (NEW!)
 6. The system prevents responding to:
    - Your own messages
    - Messages from unknown/invalid senders (None, ?, empty)
    - Empty messages
 
 **Configuration:**
-- Edit `autoresponder.json` or use the Device Settings tab
+- Edit `autoresponder.json` - **auto-reloads on file save** (no restart needed!)
 - Default rules: "ping" → "pong", "test"/"testing" → acknowledgment
 - Rules are global across all sessions
+- File watcher monitors for changes and reloads configuration automatically
 
-**Example Rule:**
+**Available Variables:**
+- `{sender_name}` - Sender's full name (e.g., "John Doe")
+- `{sender_short}` - Sender's short name (e.g., "JD")
+- `{sender_id}` - Sender's node ID (e.g., "!02ed4dfc")
+- `{my_name}` - Your node's full name
+- `{my_id}` - Your node's ID
+- `{message}` - The original message text
+- `{message_type}` - Either "broadcast" or "direct"
+- `{source_type}` - Either "RF" or "MQTT" (NEW!)
+- `{hops}` - Number of hops the message traveled (NEW!)
+
+**Example Rules:**
 ```json
 {
   "id": "ping",
   "enabled": true,
   "trigger": "ping",
   "triggerType": "exact",
-  "response": "pong from {sender_short} ({sender_name} / {sender_id})",
+  "response": "pong from {sender_short} via {source_type}",
   "messageType": "both",
+  "sourceType": "both",
   "cooldownSeconds": 60
+}
+```
+
+```json
+{
+  "id": "rf_only_test",
+  "enabled": true,
+  "trigger": "rf test",
+  "triggerType": "exact",
+  "response": "RF test received from {sender_short}",
+  "messageType": "both",
+  "sourceType": "rf",
+  "cooldownSeconds": 300
 }
 ```
 
@@ -168,12 +199,13 @@ The beacon system broadcasts periodic status messages with live device telemetry
 **How It Works:**
 1. Background thread runs per session when beacon is enabled
 2. Thread sleeps for configured interval (5min - 24hr)
-3. On wake, retrieves current device metrics from Meshtastic API
-4. Substitutes variables in message template
-5. Broadcasts message to mesh on configured channel
-6. Adds message to packet log for visibility
-7. Updates `last_beacon_time` in config
-8. Repeats until disabled or session ends
+3. On wake, **refreshes node database** to get current metrics (prevents stale data)
+4. Retrieves current device metrics from Meshtastic API
+5. Substitutes variables in message template
+6. Broadcasts message to mesh on configured channel
+7. Adds message to packet log for visibility
+8. Updates `last_beacon_time` in config
+9. Repeats until disabled or session ends
 
 **Scheduling:**
 - Uses Python threading with daemon threads
@@ -383,12 +415,14 @@ The device will repopulate the nodeDB over the next few minutes/hours as it hear
 
 ## Configuration Files
 
-- `autoresponder.json` - Auto-responder rules and settings (gitignored)
+- `autoresponder.json` - Auto-responder rules and settings (gitignored, **auto-reloads on save**)
 - `beacon.json` - Beacon configuration and variable definitions (gitignored)
 - `message_filter.json` - Message filtering rules (gitignored)
 - `messages.db` - SQLite database for persistent message storage (gitignored)
 - `persistent_sessions.json` - Saved session configurations (gitignored)
 - `debug.log` - Debug logging output when DEBUG=true (gitignored)
+
+**Note:** The `autoresponder.json` file is monitored by a file watcher. Any changes you make are automatically reloaded within 1 second - no server restart required!
 
 ## Message Persistence
 

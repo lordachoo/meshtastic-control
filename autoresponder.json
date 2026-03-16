@@ -50,6 +50,7 @@
     "{my_id}": "Your node's ID",
     "{message}": "The original message text",
     "{message_type}": "Either 'broadcast' or 'direct'",
-    "{source_type}": "Either 'RF' or 'MQTT'"
+    "{source_type}": "Either 'RF' or 'MQTT'",
+    "{hops}": "Number of hops the message traveled"
   }
 }

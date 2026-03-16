@@ -886,11 +886,18 @@ def substitute_variables(response_text, from_id, to_id, message_text, my_node, s
     my_name = my_node.get("longName", "Node") if my_node else "Node"
     my_id = my_node.get("id", "!unknown") if my_node else "!unknown"
     
-    # Determine source type
+    # Determine source type and hop count
     source_type = "unknown"
+    hops = "?"
     if packet:
         has_rf_metrics = packet.get("rxSnr") is not None or packet.get("rxRssi") is not None
         source_type = "RF" if has_rf_metrics else "MQTT"
+        
+        # Calculate hops: hopStart - hopLimit (if available)
+        hop_start = packet.get("hopStart")
+        hop_limit = packet.get("hopLimit")
+        if hop_start is not None and hop_limit is not None:
+            hops = str(hop_start - hop_limit)
     
     # Variable substitutions
     variables = {
@@ -901,7 +908,8 @@ def substitute_variables(response_text, from_id, to_id, message_text, my_node, s
         "{my_id}": my_id,
         "{message}": message_text,
         "{message_type}": "broadcast" if to_id == "^all" else "direct",
-        "{source_type}": source_type
+        "{source_type}": source_type,
+        "{hops}": hops
     }
     
     result = response_text
