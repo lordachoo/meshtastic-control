@@ -26,6 +26,15 @@ from pubsub import pub
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+# Suppress BrokenPipeError from Meshtastic library's internal heartbeat threads
+_original_excepthook = threading.excepthook
+def _quiet_broken_pipe(args):
+    if args.exc_type is BrokenPipeError:
+        logging.getLogger(__name__).debug(f"Heartbeat thread got BrokenPipeError (connection lost)")
+        return
+    _original_excepthook(args)
+threading.excepthook = _quiet_broken_pipe
+
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -244,6 +253,7 @@ def create_session_data():
         },
         "last_activity": time.time(),
         "connected_at": None,
+        "last_packet_received": None,
         "node_ip": None,
         "my_node_info": None  # Cache node info here
     }
@@ -344,13 +354,78 @@ def cleanup_old_sessions(force_one=False):
     
     return len(to_remove)
 
-# Run cleanup periodically
+CONNECTION_STALE_TIMEOUT = 300  # 5 minutes with no packets = stale connection
+
+def check_connection_liveness():
+    """Check for connected sessions with dead receive threads and auto-reconnect."""
+    now = time.time()
+    with sessions_lock:
+        for sid, sdata in list(sessions.items()):
+            iface = sdata.get("iface")
+            if not iface:
+                continue
+            
+            connected_at = sdata.get("connected_at")
+            last_pkt = sdata.get("last_packet_received")
+            
+            # Skip if connected less than 5 minutes ago (give it time to settle)
+            if connected_at and (now - connected_at) < CONNECTION_STALE_TIMEOUT:
+                continue
+            
+            # If connected but no packets received in CONNECTION_STALE_TIMEOUT, reconnect
+            last_recv = last_pkt or connected_at
+            if last_recv and (now - last_recv) > CONNECTION_STALE_TIMEOUT:
+                session_short = sid[:8]
+                host = sdata.get("node_ip")
+                
+                # Find persistent session config for this session_id
+                port = 4403
+                session_name = None
+                with persistent_sessions_lock:
+                    for name, config in persistent_sessions.items():
+                        if config.get("session_id") == sid:
+                            host = config.get("host", host)
+                            port = config.get("port", 4403)
+                            session_name = name
+                            break
+                
+                if not host:
+                    logger.warning(f"[LIVENESS:{session_short}] Stale connection but no host to reconnect to")
+                    continue
+                
+                logger.warning(f"[LIVENESS:{session_short}] No packets for {int(now - last_recv)}s, reconnecting to {host}:{port}")
+                
+                try:
+                    iface.close()
+                except:
+                    pass
+                sdata["iface"] = None
+                
+                try:
+                    new_iface = meshtastic.tcp_interface.TCPInterface(
+                        hostname=host, portNumber=port
+                    )
+                    new_iface._session_id = sid
+                    sdata["iface"] = new_iface
+                    sdata["connected_at"] = time.time()
+                    sdata["last_packet_received"] = None
+                    sdata["mqtt_health"]["connection_start"] = time.time()
+                    logger.info(f"[LIVENESS:{session_short}] Reconnected successfully to {host}:{port}")
+                    
+                    # Re-cache node info after brief delay
+                    time.sleep(2)
+                    sdata["my_node_info"] = get_my_node(sdata)
+                except Exception as e:
+                    logger.error(f"[LIVENESS:{session_short}] Reconnect failed: {e}")
+
+# Run cleanup and liveness checks periodically
 def cleanup_thread():
-    """Background thread to clean up old sessions."""
+    """Background thread to clean up old sessions and check connection liveness."""
     while True:
-        time.sleep(300)  # Check every 5 minutes
+        time.sleep(60)  # Check every minute
         with sessions_lock:
             cleanup_old_sessions()
+        check_connection_liveness()
 
 cleanup_worker = threading.Thread(target=cleanup_thread, daemon=True)
 cleanup_worker.start()
@@ -1139,6 +1214,7 @@ def on_receive(packet, interface):
                 logger.warning(f"Session {session_id} not found in sessions dict")
                 return
             session_data = sessions[session_id]
+            session_data["last_packet_received"] = time.time()
         
         logger.info(f"[Session {session_id[:8]}] Packet from {packet.get('fromId', '?')} - {packet.get('decoded', {}).get('portnum', 'UNKNOWN')}")
         
@@ -1394,10 +1470,12 @@ def status():
         else:
             print(f"[STATUS] Using cached node info for session '{session_name}': {my_node.get('id') if my_node else 'None'}")
         
+        last_pkt = session_data.get("last_packet_received")
         result = {
             "connected": True,
             "myNode": my_node,
-            "nodeCount": len(i.nodes) if i.nodes else 0
+            "nodeCount": len(i.nodes) if i.nodes else 0,
+            "last_packet_ago": round(time.time() - last_pkt) if last_pkt else None
         }
         print(f"[STATUS] Returning myNode: id={my_node.get('id') if my_node else None}, longName={my_node.get('longName') if my_node else None}, shortName={my_node.get('shortName') if my_node else None}")
         return jsonify(result)
@@ -1795,6 +1873,8 @@ def messages():
     """Get text messages only - loads from database."""
     session_name = request.args.get('session_name')
     since = request.args.get("since")
+    if since:
+        since = since.replace(' 00:00', '+00:00')  # Fix URL-decoded + sign
     
     if not session_name:
         return jsonify([])
@@ -1819,6 +1899,8 @@ def packets():
     session_name = request.args.get('session_name')
     session_data = get_session_data(session_name)
     since = request.args.get("since")
+    if since:
+        since = since.replace(' 00:00', '+00:00')  # Fix URL-decoded + sign
     
     debug(f"[API:{session_name}] /api/packets called, since={since}")
     

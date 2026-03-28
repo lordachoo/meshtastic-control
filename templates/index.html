@@ -1543,7 +1543,8 @@ function setDisconnected() {
   if (packetPollInterval) clearInterval(packetPollInterval);
   if (sweepPollInterval) clearInterval(sweepPollInterval);
   
-  // Reset message state for active session so messages reload from database on reconnect
+  // Reset packet and message state so they reload fresh on reconnect
+  lastPacketTime = null;
   const activeSession = getActiveSession();
   if (activeSession && messageState[activeSession]) {
     messageState[activeSession].lastTime = null;
@@ -2046,7 +2047,7 @@ async function refreshMessages() {
     
     const state = getMessageState(activeSession);
     const sessionParam = `&session_name=${encodeURIComponent(activeSession)}`;
-    const url = state.lastTime ? `/api/messages?since=${state.lastTime}${sessionParam}` : `/api/messages?${sessionParam.substring(1)}`;
+    const url = state.lastTime ? `/api/messages?since=${encodeURIComponent(state.lastTime)}${sessionParam}` : `/api/messages?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const messages = await res.json();
     
@@ -2194,7 +2195,7 @@ async function refreshPackets() {
   try {
     const activeSession = getActiveSession();
     const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
-    const url = lastPacketTime ? `/api/packets?since=${lastPacketTime}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
+    const url = lastPacketTime ? `/api/packets?since=${encodeURIComponent(lastPacketTime)}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const packets = await res.json();
 
