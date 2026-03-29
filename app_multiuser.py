@@ -441,13 +441,27 @@ def trigger_background_reconnect(session_data, session_id=None):
                     session_data["connected_at"] = time.time()
                     session_data["last_packet_received"] = None
                     session_data["mqtt_health"]["connection_start"] = time.time()
-                    logger.info(f"[BG-RECONN:{session_short}] Reconnected to {host}:{port} on attempt {attempt}")
                     
-                    time.sleep(2)
+                    # Verify connection survives for 3 seconds
+                    # The reader thread can die immediately on Connection Reset
+                    time.sleep(3)
+                    
+                    # Check if interface was cleared by on_connection_lost
+                    if session_data.get("iface") is not new_iface:
+                        raise Exception("Interface cleared during verification (connection_lost fired)")
+                    
+                    # Check if the meshtastic reader thread is still alive
+                    rx_thread = getattr(new_iface, '_rxThread', None)
+                    if rx_thread and not rx_thread.is_alive():
+                        session_data["iface"] = None
+                        raise Exception("Reader thread died immediately after connecting")
+                    
+                    logger.info(f"[BG-RECONN:{session_short}] Reconnected and verified alive on {host}:{port} (attempt {attempt})")
                     session_data["my_node_info"] = get_my_node(session_data)
                     return  # Success
                 except Exception as e:
                     logger.error(f"[BG-RECONN:{session_short}] Attempt {attempt} failed: {e}")
+                    session_data["iface"] = None
                     if attempt < RECONNECT_MAX_RETRIES:
                         time.sleep(RECONNECT_RETRY_DELAY)
             
@@ -1498,8 +1512,22 @@ def on_connection_lost(interface):
     Triggers immediate background reconnect instead of waiting for stale timer."""
     try:
         session_id = getattr(interface, '_session_id', None)
+        
+        # Race condition: _session_id may not be set yet if the connection died
+        # during or right after TCPInterface() constructor. Search by interface ref.
         if not session_id:
-            logger.warning("[CONN-LOST] Connection lost but no session_id on interface")
+            with sessions_lock:
+                for sid, sdata in sessions.items():
+                    if sdata.get("iface") is interface:
+                        session_id = sid
+                        logger.info(f"[CONN-LOST] Found session {sid[:8]} by interface match")
+                        break
+        
+        if not session_id:
+            # Still can't find it — this interface was likely created during a
+            # reconnect attempt and died before being stored. The _do_reconnect
+            # verification step will catch this via the dead reader thread check.
+            logger.warning("[CONN-LOST] Connection lost on unknown interface (reconnect will catch via verification)")
             return
         
         session_short = session_id[:8]
