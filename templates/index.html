@@ -1032,6 +1032,11 @@ body::after {
       <div class="value" id="stat-chanutil" style="color: var(--accent-purple);">--%</div>
       <div class="sub" id="stat-airtx"></div>
     </div>
+    <div class="stat-card">
+      <div class="label">Last Packet</div>
+      <div class="value" id="stat-last-pkt" style="font-size:14px; color: var(--text-dim);">--</div>
+      <div class="sub" id="stat-last-pkt-sub">waiting...</div>
+    </div>
   </div>
 
   <!-- Tabs -->
@@ -1595,6 +1600,30 @@ async function refreshStatus() {
         data.myNode.channelUtil != null ? data.myNode.channelUtil.toFixed(1) + '%' : '--';
       document.getElementById('stat-airtx').textContent =
         data.myNode.airUtilTx != null ? 'TX: ' + data.myNode.airUtilTx.toFixed(2) + '%' : '';
+    }
+
+    // Update last packet indicator
+    const pktEl = document.getElementById('stat-last-pkt');
+    const pktSub = document.getElementById('stat-last-pkt-sub');
+    if (data.last_packet_ago != null) {
+      const ago = data.last_packet_ago;
+      if (ago < 60) {
+        pktEl.textContent = ago + 's ago';
+        pktEl.style.color = 'var(--accent-green)';
+        pktSub.textContent = 'receiving';
+      } else if (ago < 300) {
+        pktEl.textContent = Math.floor(ago / 60) + 'm ' + (ago % 60) + 's ago';
+        pktEl.style.color = 'var(--accent-amber)';
+        pktSub.textContent = 'slow';
+      } else {
+        pktEl.textContent = Math.floor(ago / 60) + 'm ago';
+        pktEl.style.color = 'var(--accent-red)';
+        pktSub.textContent = 'stalled - will reconnect';
+      }
+    } else {
+      pktEl.textContent = '--';
+      pktEl.style.color = 'var(--text-dim)';
+      pktSub.textContent = 'no packets yet';
     }
   } catch (e) { /* silent */ }
 }
@@ -2217,7 +2246,11 @@ async function refreshPackets() {
     const packets = await res.json();
 
     if (packets.length === 0) return;
+    // Track newest timestamp before reversing (backend returns ascending)
     setLastPacketTime(activeSession, packets[packets.length - 1].time);
+
+    // Reverse so newest packets render at the top
+    packets.reverse();
 
     const el = document.getElementById('packet-list');
     // Remove empty state

@@ -12,6 +12,7 @@ import json
 import time
 import math
 import threading
+import queue
 import logging
 import os
 import secrets
@@ -354,7 +355,70 @@ def cleanup_old_sessions(force_one=False):
     
     return len(to_remove)
 
-CONNECTION_STALE_TIMEOUT = 300  # 5 minutes with no packets = stale connection
+CONNECTION_STALE_TIMEOUT = 90  # 90 seconds with no packets = stale connection
+
+# Auto-responder send queue - keeps sendText() OFF the receive thread
+autoresponder_queue = queue.Queue()
+
+def autoresponder_worker():
+    """Background thread that processes auto-responder sends."""
+    while True:
+        try:
+            job = autoresponder_queue.get()
+            if job is None:
+                continue
+            session_data, auto_response, dest, dest_id, channel, session_id, session_short = job
+            iface = session_data.get("iface")
+            if not iface:
+                logger.warning(f"[AUTO-SEND:{session_short}] No interface, skipping send")
+                continue
+            try:
+                if dest is None:
+                    iface.sendText(auto_response, channelIndex=channel)
+                else:
+                    iface.sendText(auto_response, destinationId=dest, channelIndex=channel)
+                debug(f"[AUTO-SEND:{session_short}] Sent '{auto_response}' to {dest_id} on ch{channel}")
+                
+                my_node = get_my_node(session_data)
+                my_id = my_node["id"] if my_node else "local"
+                
+                auto_response_entry = {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "from": my_id,
+                    "to": dest_id,
+                    "portnum": "TEXT_MESSAGE_APP",
+                    "text": auto_response,
+                    "snr": None,
+                    "rssi": None,
+                    "hopStart": None,
+                    "hopLimit": None,
+                    "outgoing": True,
+                    "source": "RF",
+                    "channel": channel
+                }
+                
+                with sessions_lock:
+                    session_data["packet_log"].append(auto_response_entry)
+                    if len(session_data["packet_log"]) > PACKET_LOG_MAX:
+                        session_data["packet_log"].pop(0)
+                
+                session_name = None
+                with persistent_sessions_lock:
+                    for name, config in persistent_sessions.items():
+                        if config.get("session_id") == session_id:
+                            session_name = name
+                            break
+                
+                if session_name:
+                    save_message_to_db(session_name, auto_response_entry)
+                    
+            except Exception as e:
+                logger.error(f"[AUTO-SEND:{session_short}] Send failed: {e}")
+        except Exception as e:
+            logger.error(f"[AUTO-SEND] Worker error: {e}")
+
+autoresponder_sender = threading.Thread(target=autoresponder_worker, daemon=True)
+autoresponder_sender.start()
 
 def check_connection_liveness():
     """Check for connected sessions with dead receive threads and auto-reconnect."""
@@ -368,7 +432,7 @@ def check_connection_liveness():
             connected_at = sdata.get("connected_at")
             last_pkt = sdata.get("last_packet_received")
             
-            # Skip if connected less than 5 minutes ago (give it time to settle)
+            # Skip if connected less than CONNECTION_STALE_TIMEOUT ago (give it time to settle)
             if connected_at and (now - connected_at) < CONNECTION_STALE_TIMEOUT:
                 continue
             
@@ -1267,66 +1331,18 @@ def on_receive(packet, interface):
             auto_response = check_autoresponder(text, from_id, to_id, session_data, packet)
             
             if auto_response:
-                debug(f"[AUTO-RESPONDER:{session_short}] ✓ Sending response: '{auto_response}' to {from_id} on channel {channel}")
+                debug(f"[AUTO-RESPONDER:{session_short}] ✓ Queuing response: '{auto_response}' to {from_id} on channel {channel}")
                 logger.info(f"[{session_short}] Auto-responding to '{text}' from {from_id} with '{auto_response}'")
                 
-                # Use same pattern as /api/send - no threading, direct call
-                try:
-                    # Mirror the message type: broadcast->broadcast, direct->direct
-                    if to_id == "^all":
-                        dest = None  # Broadcast
-                        dest_id = "^all"
-                        debug(f"[AUTO-RESPONDER:{session_short}] Sending '{auto_response}' to BROADCAST")
-                        session_data["iface"].sendText(auto_response, channelIndex=channel)
-                    else:
-                        dest = hex_to_int(from_id)  # Direct to sender
-                        dest_id = from_id
-                        debug(f"[AUTO-RESPONDER:{session_short}] Sending '{auto_response}' to {dest_id}")
-                        session_data["iface"].sendText(auto_response, destinationId=dest, channelIndex=channel)
-                    
-                    debug(f"[AUTO-RESPONDER:{session_short}] ✓ sendText() completed")
-                    
-                    # Add auto-response to packet log (same as /api/send)
-                    my_node = get_my_node(session_data)
-                    my_id = my_node["id"] if my_node else "local"
-                    
-                    auto_response_entry = {
-                        "time": datetime.now(timezone.utc).isoformat(),
-                        "from": my_id,
-                        "to": dest_id,
-                        "portnum": "TEXT_MESSAGE_APP",
-                        "text": auto_response,
-                        "snr": None,
-                        "rssi": None,
-                        "hopStart": None,
-                        "hopLimit": None,
-                        "outgoing": True,
-                        "source": "RF",
-                        "channel": channel
-                    }
-                    
-                    with sessions_lock:
-                        session_data["packet_log"].append(auto_response_entry)
-                        if len(session_data["packet_log"]) > PACKET_LOG_MAX:
-                            session_data["packet_log"].pop(0)
-                    
-                    debug(f"[AUTO-RESPONDER:{session_short}] ✓ Added to packet_log")
-                    
-                    # Save to database
-                    session_name = None
-                    with persistent_sessions_lock:
-                        for name, config in persistent_sessions.items():
-                            if config.get("session_id") == session_id:
-                                session_name = name
-                                break
-                    
-                    if session_name:
-                        save_message_to_db(session_name, auto_response_entry)
-                        debug(f"[AUTO-RESPONDER:{session_short}] ✓ Saved to database")
-                    
-                except Exception as e:
-                    debug(f"[AUTO-RESPONDER:{session_short}] ✗ Error: {type(e).__name__}: {e}")
-                    logger.error(f"[{session_short}] Auto-responder send failed: {e}")
+                # Queue the send to run on a background thread (not the receive thread)
+                if to_id == "^all":
+                    dest = None
+                    dest_id = "^all"
+                else:
+                    dest = hex_to_int(from_id)
+                    dest_id = from_id
+                
+                autoresponder_queue.put((session_data, auto_response, dest, dest_id, channel, session_id, session_short))
         
         # Process traceroute responses
         if decoded.get("portnum") == "TRACEROUTE_APP":
