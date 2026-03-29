@@ -380,11 +380,12 @@ def is_connection_stale(session_data):
     stale_secs = int(now - last_recv) if last_recv else None
     return True, stale_secs
 
-def trigger_background_reconnect(session_data):
+def trigger_background_reconnect(session_data, session_id=None):
     """Kick off a reconnect in a background thread (non-blocking)."""
     iface = session_data.get("iface")
-    sid = getattr(iface, '_session_id', None) if iface else session_data.get("session_id")
+    sid = session_id or getattr(iface, '_session_id', None)
     if not sid:
+        logger.warning("[BG-RECONN] Cannot reconnect: no session_id")
         return
     
     # Avoid double-reconnect if already in progress
@@ -449,9 +450,10 @@ def ensure_connection_alive(session_data, session_name=None):
         return iface
     
     # Connection is stale — kick off background reconnect and return None
-    session_short = str(getattr(iface, '_session_id', '?'))[:8]
+    sid = getattr(iface, '_session_id', None)
+    session_short = str(sid or '?')[:8]
     logger.warning(f"[PRE-SEND:{session_short}] Stale ({stale_secs}s), triggering background reconnect")
-    trigger_background_reconnect(session_data)
+    trigger_background_reconnect(session_data, session_id=sid)
     return None
 
 # Auto-responder send queue - keeps sendText() OFF the receive thread
@@ -1509,7 +1511,7 @@ def on_connection_lost(interface):
         if session_data:
             # Mark interface as dead so nothing tries to use it
             session_data["iface"] = None
-            trigger_background_reconnect(session_data)
+            trigger_background_reconnect(session_data, session_id=session_id)
         else:
             logger.warning(f"[CONN-LOST:{session_short}] No session data found for reconnect")
     except Exception as e:
