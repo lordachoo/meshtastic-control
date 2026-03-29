@@ -380,6 +380,9 @@ def is_connection_stale(session_data):
     stale_secs = int(now - last_recv) if last_recv else None
     return True, stale_secs
 
+RECONNECT_MAX_RETRIES = 3
+RECONNECT_RETRY_DELAY = 5  # seconds between retries
+
 def trigger_background_reconnect(session_data, session_id=None):
     """Kick off a reconnect in a background thread (non-blocking)."""
     iface = session_data.get("iface")
@@ -388,14 +391,22 @@ def trigger_background_reconnect(session_data, session_id=None):
         logger.warning("[BG-RECONN] Cannot reconnect: no session_id")
         return
     
-    # Avoid double-reconnect if already in progress
+    session_short = str(sid)[:8]
+    
+    # Avoid double-reconnect, but with a 60s safety timeout
+    reconn_started = session_data.get("_reconnect_started", 0)
     if session_data.get("_reconnecting"):
-        return
+        if time.time() - reconn_started < 60:
+            logger.info(f"[BG-RECONN:{session_short}] Reconnect already in progress, skipping")
+            return
+        else:
+            logger.warning(f"[BG-RECONN:{session_short}] Previous reconnect stuck >60s, forcing new attempt")
+    
     session_data["_reconnecting"] = True
+    session_data["_reconnect_started"] = time.time()
     
     def _do_reconnect():
         try:
-            session_short = str(sid)[:8]
             host = session_data.get("node_ip")
             port = 4403
             with persistent_sessions_lock:
@@ -409,8 +420,7 @@ def trigger_background_reconnect(session_data, session_id=None):
                 logger.warning(f"[BG-RECONN:{session_short}] No host to reconnect")
                 return
             
-            logger.warning(f"[BG-RECONN:{session_short}] Reconnecting to {host}:{port}")
-            
+            # Close old interface
             old_iface = session_data.get("iface")
             try:
                 if old_iface:
@@ -419,20 +429,31 @@ def trigger_background_reconnect(session_data, session_id=None):
                 pass
             session_data["iface"] = None
             
-            new_iface = meshtastic.tcp_interface.TCPInterface(
-                hostname=host, portNumber=port
-            )
-            new_iface._session_id = sid
-            session_data["iface"] = new_iface
-            session_data["connected_at"] = time.time()
-            session_data["last_packet_received"] = None
-            session_data["mqtt_health"]["connection_start"] = time.time()
-            logger.info(f"[BG-RECONN:{session_short}] Reconnected to {host}:{port}")
+            # Retry loop
+            for attempt in range(1, RECONNECT_MAX_RETRIES + 1):
+                logger.warning(f"[BG-RECONN:{session_short}] Attempt {attempt}/{RECONNECT_MAX_RETRIES} connecting to {host}:{port}")
+                try:
+                    new_iface = meshtastic.tcp_interface.TCPInterface(
+                        hostname=host, portNumber=port
+                    )
+                    new_iface._session_id = sid
+                    session_data["iface"] = new_iface
+                    session_data["connected_at"] = time.time()
+                    session_data["last_packet_received"] = None
+                    session_data["mqtt_health"]["connection_start"] = time.time()
+                    logger.info(f"[BG-RECONN:{session_short}] Reconnected to {host}:{port} on attempt {attempt}")
+                    
+                    time.sleep(2)
+                    session_data["my_node_info"] = get_my_node(session_data)
+                    return  # Success
+                except Exception as e:
+                    logger.error(f"[BG-RECONN:{session_short}] Attempt {attempt} failed: {e}")
+                    if attempt < RECONNECT_MAX_RETRIES:
+                        time.sleep(RECONNECT_RETRY_DELAY)
             
-            time.sleep(2)
-            session_data["my_node_info"] = get_my_node(session_data)
+            logger.error(f"[BG-RECONN:{session_short}] All {RECONNECT_MAX_RETRIES} attempts failed for {host}:{port}")
         except Exception as e:
-            logger.error(f"[BG-RECONN] Reconnect failed: {e}")
+            logger.error(f"[BG-RECONN:{session_short}] Reconnect error: {e}")
         finally:
             session_data["_reconnecting"] = False
     
@@ -521,66 +542,45 @@ autoresponder_sender = threading.Thread(target=autoresponder_worker, daemon=True
 autoresponder_sender.start()
 
 def check_connection_liveness():
-    """Check for connected sessions with dead receive threads and auto-reconnect."""
+    """Check for connected sessions with dead receive threads and trigger background reconnect."""
     now = time.time()
+    stale_sessions = []
+    
     with sessions_lock:
         for sid, sdata in list(sessions.items()):
             iface = sdata.get("iface")
-            if not iface:
-                continue
-            
             connected_at = sdata.get("connected_at")
             last_pkt = sdata.get("last_packet_received")
             
-            # Skip if connected less than CONNECTION_STALE_TIMEOUT ago (give it time to settle)
+            # Skip if just connected (give it time to settle)
             if connected_at and (now - connected_at) < CONNECTION_STALE_TIMEOUT:
+                continue
+            
+            # If iface is None (already lost), check if we should reconnect
+            if not iface:
+                # Only reconnect if this session has a persistent config (not abandoned)
+                has_persistent = False
+                with persistent_sessions_lock:
+                    for name, config in persistent_sessions.items():
+                        if config.get("session_id") == sid:
+                            has_persistent = True
+                            break
+                if has_persistent and not sdata.get("_reconnecting"):
+                    session_short = sid[:8]
+                    logger.warning(f"[LIVENESS:{session_short}] Interface is None, needs reconnect")
+                    stale_sessions.append((sid, sdata))
                 continue
             
             # If connected but no packets received in CONNECTION_STALE_TIMEOUT, reconnect
             last_recv = last_pkt or connected_at
             if last_recv and (now - last_recv) > CONNECTION_STALE_TIMEOUT:
                 session_short = sid[:8]
-                host = sdata.get("node_ip")
-                
-                # Find persistent session config for this session_id
-                port = 4403
-                session_name = None
-                with persistent_sessions_lock:
-                    for name, config in persistent_sessions.items():
-                        if config.get("session_id") == sid:
-                            host = config.get("host", host)
-                            port = config.get("port", 4403)
-                            session_name = name
-                            break
-                
-                if not host:
-                    logger.warning(f"[LIVENESS:{session_short}] Stale connection but no host to reconnect to")
-                    continue
-                
-                logger.warning(f"[LIVENESS:{session_short}] No packets for {int(now - last_recv)}s, reconnecting to {host}:{port}")
-                
-                try:
-                    iface.close()
-                except:
-                    pass
-                sdata["iface"] = None
-                
-                try:
-                    new_iface = meshtastic.tcp_interface.TCPInterface(
-                        hostname=host, portNumber=port
-                    )
-                    new_iface._session_id = sid
-                    sdata["iface"] = new_iface
-                    sdata["connected_at"] = time.time()
-                    sdata["last_packet_received"] = None
-                    sdata["mqtt_health"]["connection_start"] = time.time()
-                    logger.info(f"[LIVENESS:{session_short}] Reconnected successfully to {host}:{port}")
-                    
-                    # Re-cache node info after brief delay
-                    time.sleep(2)
-                    sdata["my_node_info"] = get_my_node(sdata)
-                except Exception as e:
-                    logger.error(f"[LIVENESS:{session_short}] Reconnect failed: {e}")
+                logger.warning(f"[LIVENESS:{session_short}] No packets for {int(now - last_recv)}s, needs reconnect")
+                stale_sessions.append((sid, sdata))
+    
+    # Trigger reconnects OUTSIDE the sessions_lock to avoid blocking
+    for sid, sdata in stale_sessions:
+        trigger_background_reconnect(sdata, session_id=sid)
 
 # Run cleanup and liveness checks periodically
 def cleanup_thread():
