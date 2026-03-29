@@ -2052,7 +2052,8 @@ async function stopSweep() {
 
 async function refreshSweepStatus() {
   try {
-    const res = await fetch('/api/sweep/status');
+    const activeSession = getActiveSession();
+    const res = await fetch('/api/sweep/status' + (activeSession ? `?session_name=${encodeURIComponent(activeSession)}` : ''));
     const data = await res.json();
 
     const pct = data.total > 0 ? (data.completed / data.total * 100) : 0;
@@ -2319,10 +2320,16 @@ async function sendMessage() {
   if (!text) { toast('Enter a message', 'error'); return; }
 
   try {
+    const activeSession = getActiveSession();
+    const payload = { text, dest };
+    if (activeSession) {
+      payload.session_name = activeSession;
+    }
+
     const res = await fetch('/api/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, dest })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (data.error) { toast(data.error, 'error'); return; }
@@ -2335,7 +2342,8 @@ async function sendMessage() {
 async function refreshDeviceSettings() {
   if (!connected) return;
   try {
-    const res = await fetch('/api/device/config');
+    const activeSession = getActiveSession();
+    const res = await fetch('/api/device/config' + (activeSession ? `?session_name=${encodeURIComponent(activeSession)}` : ''));
     const config = await res.json();
     renderDeviceSettings(config);
   } catch (e) {
@@ -3085,7 +3093,9 @@ async function rebootDevice() {
   
   try {
     const res = await fetch('/api/device/reboot', {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_name: getActiveSession() })
     });
     const data = await res.json();
     
@@ -3106,7 +3116,9 @@ async function shutdownDevice() {
   
   try {
     const res = await fetch('/api/device/shutdown', {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_name: getActiveSession() })
     });
     const data = await res.json();
     
@@ -3131,7 +3143,9 @@ async function factoryResetDevice() {
   
   try {
     const res = await fetch('/api/device/factory-reset', {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_name: getActiveSession() })
     });
     const data = await res.json();
     
@@ -3344,7 +3358,8 @@ async function openMqttConfigModal() {
   
   // Load current MQTT config from device
   try {
-    const res = await fetch('/api/device/mqtt/config');
+    const activeSession = getActiveSession();
+    const res = await fetch('/api/device/mqtt/config' + (activeSession ? `?session_name=${encodeURIComponent(activeSession)}` : ''));
     const data = await res.json();
     
     if (data.error) {
@@ -3384,6 +3399,7 @@ async function saveMqttConfig() {
   };
   
   try {
+    config.session_name = getActiveSession();
     const res = await fetch('/api/device/mqtt/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3440,7 +3456,7 @@ async function testMqttConnection() {
     const res = await fetch('/api/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: testMsg, dest: null })
+      body: JSON.stringify({ text: testMsg, dest: null, session_name: getActiveSession() })
     });
     const data = await res.json();
     
