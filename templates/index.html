@@ -1372,6 +1372,16 @@ let allNodes = [];
 let pollInterval = null;
 let packetPollInterval = null;
 let sweepPollInterval = null;
+let mqttHealthInterval = null;
+
+// Session-specific packet polling state
+let lastPacketTimes = {};  // { sessionName: timestamp }
+function getLastPacketTime(sessionName) {
+  return sessionName ? (lastPacketTimes[sessionName] || null) : null;
+}
+function setLastPacketTime(sessionName, time) {
+  if (sessionName) lastPacketTimes[sessionName] = time;
+}
 
 // ── Toast Notifications ────────────────────────────────────────────────
 function toast(msg, type = 'info') {
@@ -1514,6 +1524,11 @@ function setConnected(data) {
   refreshStatus();
   refreshMqttHealth();
 
+  // Clear any existing intervals before starting new ones
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  if (packetPollInterval) { clearInterval(packetPollInterval); packetPollInterval = null; }
+  if (mqttHealthInterval) { clearInterval(mqttHealthInterval); mqttHealthInterval = null; }
+
   // Start polling
   pollInterval = setInterval(() => {
     refreshNodes();
@@ -1539,16 +1554,19 @@ function setDisconnected() {
   document.getElementById('nodes-content').style.display = 'none';
   document.getElementById('nodes-empty').style.display = '';
 
-  if (pollInterval) clearInterval(pollInterval);
-  if (packetPollInterval) clearInterval(packetPollInterval);
-  if (sweepPollInterval) clearInterval(sweepPollInterval);
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  if (packetPollInterval) { clearInterval(packetPollInterval); packetPollInterval = null; }
+  if (sweepPollInterval) { clearInterval(sweepPollInterval); sweepPollInterval = null; }
+  if (mqttHealthInterval) { clearInterval(mqttHealthInterval); mqttHealthInterval = null; }
   
   // Reset packet and message state so they reload fresh on reconnect
-  lastPacketTime = null;
   const activeSession = getActiveSession();
-  if (activeSession && messageState[activeSession]) {
-    messageState[activeSession].lastTime = null;
-    messageState[activeSession].displayedIds = new Set();
+  if (activeSession) {
+    lastPacketTimes[activeSession] = null;
+    if (messageState[activeSession]) {
+      messageState[activeSession].lastTime = null;
+      messageState[activeSession].displayedIds = new Set();
+    }
   }
 }
 
@@ -2188,19 +2206,18 @@ async function sendMessageFromTab() {
 }
 
 // ── Packet Log ─────────────────────────────────────────────────────────
-let lastPacketTime = null;
-
 async function refreshPackets() {
   if (!connected) return;
   try {
     const activeSession = getActiveSession();
     const sessionParam = activeSession ? `&session_name=${encodeURIComponent(activeSession)}` : '';
-    const url = lastPacketTime ? `/api/packets?since=${encodeURIComponent(lastPacketTime)}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
+    const lastTime = getLastPacketTime(activeSession);
+    const url = lastTime ? `/api/packets?since=${encodeURIComponent(lastTime)}${sessionParam}` : `/api/packets?${sessionParam.substring(1)}`;
     const res = await fetch(url);
     const packets = await res.json();
 
     if (packets.length === 0) return;
-    lastPacketTime = packets[packets.length - 1].time;
+    setLastPacketTime(activeSession, packets[packets.length - 1].time);
 
     const el = document.getElementById('packet-list');
     // Remove empty state
@@ -2238,7 +2255,8 @@ async function refreshPackets() {
 function clearPackets() {
   document.getElementById('packet-list').innerHTML =
     '<div class="empty-state" style="padding:40px;"><p>Cleared</p></div>';
-  lastPacketTime = null;
+  const activeSession = getActiveSession();
+  if (activeSession) lastPacketTimes[activeSession] = null;
 }
 
 function replyToMessage(nodeId, event) {
@@ -3791,10 +3809,17 @@ function switchActiveSession() {
   
   if (newSession) {
     setActiveSession(newSession);
+    // Clear displayed packets/messages so they reload for the new session
+    document.getElementById('packet-list').innerHTML = '';
+    document.getElementById('message-list').innerHTML = '';
     toast(`Switched to session: ${newSession}`, 'info');
-    // Refresh data for new session
+    // Refresh all data for new session
     refreshStatus();
     refreshNodes();
+    refreshPackets();
+    refreshMessages();
+    refreshMqttHealth();
+    refreshTraceroutes();
   } else {
     setActiveSession(null);
   }
@@ -3827,13 +3852,21 @@ async function initializePage() {
       document.getElementById('nodes-content').style.display = '';
       switchTab('nodes');
       
-      // Start polling
-      pollInterval = setInterval(refreshStatus, 3000);
+      // Clear any existing intervals then start polling
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+      if (packetPollInterval) { clearInterval(packetPollInterval); packetPollInterval = null; }
+      if (mqttHealthInterval) { clearInterval(mqttHealthInterval); mqttHealthInterval = null; }
+      
+      pollInterval = setInterval(() => {
+        refreshNodes();
+        refreshStatus();
+        refreshTraceroutes();
+        refreshMqttHealth();
+      }, 10000);
       packetPollInterval = setInterval(() => {
         refreshPackets();
         refreshMessages();
       }, 3000);
-      mqttHealthInterval = setInterval(refreshMqttHealth, 5000);
       
       // Load data immediately - backend has cached node info
       refreshStatus();
