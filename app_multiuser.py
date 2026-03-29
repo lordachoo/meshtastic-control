@@ -358,73 +358,101 @@ def cleanup_old_sessions(force_one=False):
 CONNECTION_STALE_TIMEOUT = 45  # 45 seconds with no packets = stale connection
 SEND_STALE_THRESHOLD = 30     # 30 seconds with no packets = reconnect before sending
 
-def ensure_connection_alive(session_data, session_name=None):
-    """Check if session connection is stale and force reconnect if needed.
-    Returns the (possibly new) interface, or None if reconnect failed."""
+def is_connection_stale(session_data):
+    """Check if a session's connection looks stale (no recent packets).
+    Returns (is_stale: bool, stale_seconds: int or None)."""
     iface = session_data.get("iface")
     if not iface:
-        return None
+        return True, None
     
     now = time.time()
     last_pkt = session_data.get("last_packet_received")
     connected_at = session_data.get("connected_at")
     last_recv = last_pkt or connected_at
     
-    # If we've received packets recently, connection is fine
-    if last_recv and (now - last_recv) < SEND_STALE_THRESHOLD:
-        return iface
-    
-    # Skip if just connected (give it time to settle)
+    # Just connected — not stale yet
     if connected_at and (now - connected_at) < SEND_STALE_THRESHOLD:
+        return False, None
+    
+    if last_recv and (now - last_recv) < SEND_STALE_THRESHOLD:
+        return False, None
+    
+    stale_secs = int(now - last_recv) if last_recv else None
+    return True, stale_secs
+
+def trigger_background_reconnect(session_data):
+    """Kick off a reconnect in a background thread (non-blocking)."""
+    iface = session_data.get("iface")
+    sid = getattr(iface, '_session_id', None) if iface else session_data.get("session_id")
+    if not sid:
+        return
+    
+    # Avoid double-reconnect if already in progress
+    if session_data.get("_reconnecting"):
+        return
+    session_data["_reconnecting"] = True
+    
+    def _do_reconnect():
+        try:
+            session_short = str(sid)[:8]
+            host = session_data.get("node_ip")
+            port = 4403
+            with persistent_sessions_lock:
+                for name, config in persistent_sessions.items():
+                    if config.get("session_id") == sid:
+                        host = config.get("host", host)
+                        port = config.get("port", 4403)
+                        break
+            
+            if not host:
+                logger.warning(f"[BG-RECONN:{session_short}] No host to reconnect")
+                return
+            
+            logger.warning(f"[BG-RECONN:{session_short}] Reconnecting to {host}:{port}")
+            
+            old_iface = session_data.get("iface")
+            try:
+                if old_iface:
+                    old_iface.close()
+            except:
+                pass
+            session_data["iface"] = None
+            
+            new_iface = meshtastic.tcp_interface.TCPInterface(
+                hostname=host, portNumber=port
+            )
+            new_iface._session_id = sid
+            session_data["iface"] = new_iface
+            session_data["connected_at"] = time.time()
+            session_data["last_packet_received"] = None
+            session_data["mqtt_health"]["connection_start"] = time.time()
+            logger.info(f"[BG-RECONN:{session_short}] Reconnected to {host}:{port}")
+            
+            time.sleep(2)
+            session_data["my_node_info"] = get_my_node(session_data)
+        except Exception as e:
+            logger.error(f"[BG-RECONN] Reconnect failed: {e}")
+        finally:
+            session_data["_reconnecting"] = False
+    
+    threading.Thread(target=_do_reconnect, daemon=True).start()
+
+def ensure_connection_alive(session_data, session_name=None):
+    """Check if session connection is stale. If stale, trigger background reconnect.
+    Returns the interface if alive, or None if stale (caller should retry later)."""
+    iface = session_data.get("iface")
+    if not iface:
+        return None
+    
+    stale, stale_secs = is_connection_stale(session_data)
+    if not stale:
         return iface
     
-    # Connection looks stale - force reconnect
-    sid = session_data.get("session_id") or getattr(iface, '_session_id', 'unknown')
-    session_short = str(sid)[:8]
-    
-    # Find host/port from persistent sessions
-    host = session_data.get("node_ip")
-    port = 4403
-    with persistent_sessions_lock:
-        for name, config in persistent_sessions.items():
-            if config.get("session_id") == sid:
-                host = config.get("host", host)
-                port = config.get("port", 4403)
-                if not session_name:
-                    session_name = name
-                break
-    
-    if not host:
-        logger.warning(f"[PRE-SEND:{session_short}] Stale but no host to reconnect")
-        return iface  # Return existing iface as fallback
-    
-    stale_secs = int(now - last_recv) if last_recv else '?'
-    logger.warning(f"[PRE-SEND:{session_short}] Stale ({stale_secs}s), reconnecting before send")
-    
-    try:
-        iface.close()
-    except:
-        pass
-    session_data["iface"] = None
-    
-    try:
-        new_iface = meshtastic.tcp_interface.TCPInterface(
-            hostname=host, portNumber=port
-        )
-        new_iface._session_id = sid
-        session_data["iface"] = new_iface
-        session_data["connected_at"] = time.time()
-        session_data["last_packet_received"] = None
-        session_data["mqtt_health"]["connection_start"] = time.time()
-        logger.info(f"[PRE-SEND:{session_short}] Reconnected to {host}:{port}")
-        
-        # Brief pause to let the connection establish and start receiving
-        time.sleep(1)
-        session_data["my_node_info"] = get_my_node(session_data)
-        return new_iface
-    except Exception as e:
-        logger.error(f"[PRE-SEND:{session_short}] Reconnect failed: {e}")
-        return None
+    # Connection is stale — kick off background reconnect and return None
+    session_short = str(getattr(iface, '_session_id', '?'))[:8]
+    logger.warning(f"[PRE-SEND:{session_short}] Stale ({stale_secs}s), triggering background reconnect")
+    trigger_background_reconnect(session_data)
+    return None
 
 # Auto-responder send queue - keeps sendText() OFF the receive thread
 autoresponder_queue = queue.Queue()
@@ -1463,6 +1491,32 @@ def on_receive(packet, interface):
 # Set up global packet listener for all sessions
 pub.subscribe(on_receive, "meshtastic.receive")
 
+def on_connection_lost(interface):
+    """Called when meshtastic library detects a connection loss (e.g. Connection reset by peer).
+    Triggers immediate background reconnect instead of waiting for stale timer."""
+    try:
+        session_id = getattr(interface, '_session_id', None)
+        if not session_id:
+            logger.warning("[CONN-LOST] Connection lost but no session_id on interface")
+            return
+        
+        session_short = session_id[:8]
+        logger.warning(f"[CONN-LOST:{session_short}] Connection lost, triggering immediate reconnect")
+        
+        with sessions_lock:
+            session_data = sessions.get(session_id)
+        
+        if session_data:
+            # Mark interface as dead so nothing tries to use it
+            session_data["iface"] = None
+            trigger_background_reconnect(session_data)
+        else:
+            logger.warning(f"[CONN-LOST:{session_short}] No session data found for reconnect")
+    except Exception as e:
+        logger.error(f"[CONN-LOST] Error handling connection loss: {e}")
+
+pub.subscribe(on_connection_lost, "meshtastic.connection.lost")
+
 
 # ── Routes ──────────────────────────────────────────────────────────────────
 
@@ -1898,10 +1952,10 @@ def send_message():
     session_name = data.get('session_name')
     session_data = get_session_data(session_name)
     
-    # Pre-send liveness check: reconnect if connection looks stale
+    # Pre-send liveness check: if stale, trigger background reconnect (non-blocking)
     i = ensure_connection_alive(session_data, session_name)
     if not i:
-        return jsonify({"error": "Not connected (reconnect failed)"}), 400
+        return jsonify({"error": "Connection stale — reconnecting. Try again in a few seconds."}), 503
 
     text = data.get("text", "")
     dest = data.get("dest")  # None = broadcast
