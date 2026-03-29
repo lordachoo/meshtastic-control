@@ -2132,12 +2132,14 @@ async function refreshMessages() {
         msgClass = 'broadcast';
       }
       
-      // Look up sender/recipient names
+      // Look up sender/recipient names + addresses
       const fromNode = allNodes.find(n => n.id === msg.from);
       const fromName = fromNode ? fromNode.longName : msg.from;
+      const fromAddr = msg.from && msg.from !== fromName ? msg.from : '';
       
       const toNode = allNodes.find(n => n.id === msg.to);
       const toName = isBroadcast ? 'Broadcast' : (toNode ? toNode.longName : msg.to);
+      const toAddr = !isBroadcast && msg.to && msg.to !== toName ? msg.to : '';
       
       // Determine if message came via RF or MQTT
       const isViaMqtt = msg.snr == null && msg.rssi == null && !isOutgoing;
@@ -2170,8 +2172,8 @@ async function refreshMessages() {
       return `<div class="msg-entry ${msgClass}">
         <div class="msg-header">
           <div>
-            <span class="msg-from">${displayFrom}</span>
-            <span class="msg-to"> → ${toName}</span>
+            <span class="msg-from">${displayFrom}</span>${!isOutgoing && fromAddr ? `<span style="font-size:10px;color:#888;font-family:monospace;margin-left:4px;user-select:all;">(${fromAddr})</span>` : ''}
+            <span class="msg-to"> → ${toName}</span>${toAddr ? `<span style="font-size:10px;color:#888;font-family:monospace;margin-left:4px;user-select:all;">(${toAddr})</span>` : ''}
             ${sourceBadge}
             ${replyBtn}
           </div>
