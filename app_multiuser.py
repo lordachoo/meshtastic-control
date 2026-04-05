@@ -1461,7 +1461,7 @@ def on_receive(packet, interface):
         # Process traceroute responses
         if decoded.get("portnum") == "TRACEROUTE_APP":
             tr = decoded.get("traceroute", {})
-            from_id = packet.get("fromId", "?")
+            from_id = packet.get("fromId") or "?"
             route = tr.get("route", [])
             route_back = tr.get("routeBack", [])
             snr_towards = tr.get("snrTowards", [])
@@ -1816,7 +1816,9 @@ def traceroute_results_endpoint():
     """Get all traceroute results."""
     session_name = request.args.get('session_name')
     session_data = get_session_data(session_name)
-    return jsonify(session_data["traceroute_results"])
+    # Filter out any None keys that snuck in from packets with missing fromId
+    results = {k: v for k, v in session_data["traceroute_results"].items() if k is not None}
+    return jsonify(results)
 
 
 @app.route("/api/traceroute/cancel", methods=["POST"])
